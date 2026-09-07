@@ -1,0 +1,129 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nas4av"
+version = "0.1.0.dev0"
+description = "Neural architecture search for authorship verification"
+readme = "README.md"
+requires-python = "==3.12.*"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BASE = the `verify` replication tier.
+#
+# CPU only. No CUDA, no platform-specific wheels. This set must install on
+# macOS and on CPU-only Linux, because most of this work is checkable without a
+# GPU: the parameter counts are closed-form from the genotype, the feasibility
+# constraints are arithmetic, the Monte Carlo null over the feasible space is
+# CPU work, and every statistical comparison runs on the result tables.
+#
+# Adding a GPU dependency here would move claims that rest on protocol behind
+# hardware nobody should need in order to check them.
+# ─────────────────────────────────────────────────────────────────────────────
+dependencies = [
+  "numpy>=1.26,<3",
+  "scipy>=1.12",
+  "pandas>=2.2",
+  "pyarrow>=15",
+  "matplotlib>=3.8",
+  "pyyaml>=6.0",
+  "tqdm>=4.66",
+  # Permutation importance, and the one-hot encoding that a nominal genotype requires:
+  # layer identities are categories, not points on a scale, so a tree fitted on the raw
+  # integers would split on an ordering that does not exist.
+  "scikit-learn>=1.4",
+  # Friedman with a Holm post-hoc, for comparisons that span several corpora. Pairwise
+  # tests repeated across corpora need a multiplicity correction.
+  "scikit-posthocs>=0.9",
+]
+
+[project.optional-dependencies]
+
+# TRAIN = the search campaign, the full-training campaign, and the baselines.
+# Pulls a CUDA build of PyTorch on Linux. Locked separately, per platform.
+#
+# `gensim` and `nltk` are here rather than in base because they are only needed
+# to rebuild features from raw text; the stored feature tensors carry everything
+# the verify tier reads.
+train = [
+  "torch>=2.4",
+  "transformers>=4.44",
+  "tokenizers>=0.19",
+  "datasets>=2.20",
+  "accelerate>=0.33",
+  "safetensors>=0.4",
+  "nltk>=3.9",
+  "gensim>=4.3",
+]
+
+# AZURE = job submission and telemetry against the provisioned workspace.
+azure = [
+  "azure-ai-ml>=1.19",
+  "azure-identity>=1.17",
+  "azure-storage-blob>=12.20",
+]
+
+# DEV = contributors and CI.
+dev = [
+  "pytest>=8.2",
+  "pytest-cov>=5.0",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "types-pyyaml",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nas4av"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PyTorch index, declared here and not in prose.
+#
+# If a reader has to remember to pass --extra-index-url, then "resolves from the
+# lockfile alone" fails on first contact with a stranger.
+#
+# The prior campaign ran on an sm_75 device. CUDA 12.1 supports it and is broadly
+# driver-compatible; this pin must be validated against the driver in the target
+# VM image before a campaign runs.
+#
+# The marker keeps macOS and CPU-only Linux resolving torch from PyPI, so the
+# `train` extra stays installable for local development without CUDA. That
+# matters here: the model uses float64 BatchNorm, which Apple MPS does not
+# support, so local runs are CPU runs.
+# ─────────────────────────────────────────────────────────────────────────────
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu121", marker = "sys_platform == 'linux'" }]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "NPY"]
+
+[tool.ruff.lint.per-file-ignores]
+# Code extracted from the prior implementation is kept as close to its source as
+# the device parameterisation allows, so that a reproduction mismatch is a real
+# finding rather than a transcription error. Linting it into modern style would
+# destroy that property.
+"src/nas4av/legacy/*.py" = ["ALL"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+  "gpu: requires a CUDA device; excluded from the verify tier",
+  "slow: takes more than a few seconds",
+  "legacy: reads the prior campaign's published tables; skipped when absent",
+]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+warn_redundant_casts = true
+exclude = ["src/nas4av/legacy/"]

@@ -1,0 +1,82 @@
+# ── Python ────────────────────────────────────────────────────────────
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ── Environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.python-version
+
+# ── The prior campaign's repository ───────────────────────────────────
+# A clone of github.com/luisferro2/NAS_4_AV, pinned at 65ee410. Read-only, and
+# somebody else's repository: it is obtained rather than vendored, so that what
+# this project asserts about it can always be checked against the source.
+#   git clone https://github.com/luisferro2/NAS_4_AV.git reference/NAS_4_AV
+reference/
+
+# ── Heavy artifacts: distributed via releases, never committed ─────────
+models/
+checkpoints/
+data/cache/
+*.safetensors
+*.ckpt
+*.pt
+*.bin
+
+# Generated artifacts. Every one is reproducible from the verify tier, and the
+# tables that need a citable identifier go to a release rather than into git.
+artifacts/
+
+# ── Terraform ─────────────────────────────────────────────────────────
+# State can contain secrets and is never committed.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+!infra/target.tfvars
+.terraform.lock.hcl.bak
+crash.log
+
+# ── Azure / credentials ───────────────────────────────────────────────
+.azure/
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+
+# ── Design record and build material ─────────────────────────────────
+# The design record — proposal, specs, task ordering, findings — is kept in a
+# private repository and mounted here as a symlink, so that this repository
+# carries the code and the instructions to run it, and nothing about how it came
+# to be written.
+openspec
+
+# Editor and assistant configuration. Build material, never part of the
+# replication package.
+.claude/
+
+# ── OS / editor ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+
+# ── Notebook noise ────────────────────────────────────────────────────
+.ipynb_checkpoints/
