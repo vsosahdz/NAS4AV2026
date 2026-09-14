@@ -102,16 +102,13 @@ torch = [{ index = "pytorch-cu121", marker = "sys_platform == 'linux'" }]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# The generated transcription is never linted or formatted. Reformatting it would make
+# `extract --check` fail forever, and the whole point of the file is that it matches its
+# source rather than our style.
+extend-exclude = ["src/nas4av/original/pipeline.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "NPY"]
-
-[tool.ruff.lint.per-file-ignores]
-# Code extracted from the prior implementation is kept as close to its source as
-# the device parameterisation allows, so that a reproduction mismatch is a real
-# finding rather than a transcription error. Linting it into modern style would
-# destroy that property.
-"src/nas4av/legacy/*.py" = ["ALL"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -126,4 +123,4 @@ markers = [
 python_version = "3.12"
 warn_unused_ignores = true
 warn_redundant_casts = true
-exclude = ["src/nas4av/legacy/"]
+exclude = ["src/nas4av/original/pipeline.py"]
