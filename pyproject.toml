@@ -110,6 +110,15 @@ extend-exclude = ["src/nas4av/original/pipeline.py"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "NPY"]
 
+[tool.ruff.lint.per-file-ignores]
+# NPY002 asks for np.random.Generator instead of the legacy global API. Here the legacy
+# API is the point rather than an oversight: the extracted pipeline writes to numpy's
+# global state -- RDropout seeds it from the layer width -- so isolating and restoring
+# that state means touching the same generator it uses. A Generator instance would leave
+# the defect exactly where it is.
+"src/nas4av/protocol.py" = ["NPY002"]
+"tests/test_protocol.py" = ["NPY002"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
