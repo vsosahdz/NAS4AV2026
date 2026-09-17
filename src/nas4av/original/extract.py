@@ -28,21 +28,29 @@ from ..prior.repository import reference_root
 #: Deliberately not everything. The graph search space, the ensemble machinery, the
 #: preprocessing and the SVM baseline are excluded: the features are already stored as
 #: tensors, and the parts that are being replaced should not be carried along.
-CELLS: tuple[tuple[int, str], ...] = (
-    (4, "debug"),
+#: Each entry is (cell index, name, stop marker). A stop marker truncates the cell at the
+#: first line that starts with it, which is how a cell that defines a function *and* then
+#: calls it at module level contributes only its definition. Importing a module that runs
+#: the notebook's top-level statements would need the notebook's globals to exist.
+CELLS: tuple[tuple[int, str, str | None], ...] = (
+    (4, "debug", None),
     # Label construction. Extracted rather than reimplemented because the pairing is
     # load-bearing and easy to get subtly wrong: each CSV row yields two documents and
     # one label, so the document frame is twice the length of the label list, and
     # ``make_df`` pads the tail with -1 values that are never read.
-    (5, "split_data"),
-    (9, "make_df"),
-    (26, "RDropout"),
-    (28, "Model"),
-    (30, "Search_Space"),
-    (32, "Sequential_Search_Space"),
-    (44, "TrainingType"),
-    (45, "train_predict"),
-    (46, "train_predict_evaluate"),
+    (5, "split_data", None),
+    (9, "make_df", None),
+    # Punctuation features for the syntactic arm, computed from text at run time rather
+    # than stored. Its fixed width of 32 is what makes the syntactic input shape
+    # (tensor + 32) * 2; the module-level call that follows the definition is cut.
+    (19, "get_punctuation_bow", "puncs_train, puncs_test = get_punctuation_bow"),
+    (26, "RDropout", None),
+    (28, "Model", None),
+    (30, "Search_Space", None),
+    (32, "Sequential_Search_Space", None),
+    (44, "TrainingType", None),
+    (45, "train_predict", None),
+    (46, "train_predict_evaluate", None),
 )
 
 #: Every device edit, applied in order. The prior implementation hardcodes CUDA in eleven
@@ -56,7 +64,7 @@ DEVICE_SUBSTITUTIONS: tuple[tuple[str, str, int], ...] = (
     ("""torch.device("cuda" if torch.cuda.is_available() else "cpu")""", "DEVICE", 1),
     ("""device='cuda'""", "device=DEVICE", 1),
     (""".to(torch.device('cuda'))""", ".to(DEVICE)", 6),
-    (""".to('cuda')""", ".to(DEVICE)", 3),
+    (""".to('cuda')""", ".to(DEVICE)", 5),
 )
 
 HEADER = '''"""Extracted from the prior implementation's notebook. Do not edit by hand.
@@ -87,6 +95,8 @@ import random
 import time
 from copy import deepcopy
 from enum import Enum
+
+import string
 
 import numpy as np
 import pandas as pd
@@ -149,10 +159,20 @@ def build() -> str:
     """
     cells = code_cells()
     parts = []
-    for index, name in CELLS:
+    for index, name, stop_at in CELLS:
         if index >= len(cells):
             raise SystemExit(f"notebook has {len(cells)} code cells; {name} expects {index}")
-        source = cells[index].strip("\n")
+        source = cells[index]
+        if stop_at is not None:
+            lines = source.split("\n")
+            cut = [i for i, line in enumerate(lines) if line.startswith(stop_at)]
+            if not cut:
+                raise SystemExit(
+                    f"{name}: stop marker {stop_at!r} is not in cell {index}. The notebook "
+                    "changed shape; adjust the marker deliberately."
+                )
+            source = "\n".join(lines[: cut[0]])
+        source = source.strip("\n")
         rule = "─" * max(0, 66 - len(name))
         parts.append(f"\n\n# ── {name} {rule}\n# code cell {index}\n\n{source}\n")
 

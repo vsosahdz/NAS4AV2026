@@ -27,6 +27,8 @@ import time
 from copy import deepcopy
 from enum import Enum
 
+import string
+
 import numpy as np
 import pandas as pd
 import torch
@@ -139,6 +141,48 @@ def make_df(X, Y):
     df['label'] = df['label'].astype('int')
     
     return df
+
+
+# ── get_punctuation_bow ───────────────────────────────────────────────
+# code cell 19
+
+def get_punctuation_bow(df_training, df_test):
+    """Calculate bag of punctuations for the input document DataFrames.
+    
+    Input:
+    df_training: DataFrame -> contains training examples in the single-column
+                              format.
+    df_test: DataFrame -> contains test examples in the single-column
+                              format.
+
+    Returns:
+    puncs_train: Tensor -> The bag-of-punctuation marks for the training set.
+    puncs_test: Tensor -> The bag-of-punctuation marks for the test set.
+    """ 
+
+    training_counts = []
+    for i in df_training.index:
+        curr_chunk = df_training.loc[i]['text']
+        curr_count = [0] * 32
+        for char in curr_chunk:
+            if char in string.punctuation:
+                # The position in the array matches that of punctuation.
+                curr_count[string.punctuation.index(char)] += 1
+        training_counts += [curr_count]
+
+    test_counts = []
+    for i in df_test.index:
+        curr_chunk = df_test.loc[i]['text']
+        curr_count = [0] * 32
+        for char in curr_chunk:
+            if char in string.punctuation:
+                curr_count[string.punctuation.index(char)] += 1
+        test_counts += [curr_count]
+
+    puncs_train = nn.functional.normalize(torch.DoubleTensor(training_counts).to(DEVICE), dim=1)
+    puncs_test = nn.functional.normalize(torch.DoubleTensor(test_counts).to(DEVICE), dim=1)
+
+    return puncs_train, puncs_test
 
 
 # ── RDropout ──────────────────────────────────────────────────────────

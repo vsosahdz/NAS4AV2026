@@ -53,7 +53,7 @@ def test_every_substitution_is_exercised(_require_notebook):
     rather than be absorbed.
     """
     cells = extract.code_cells()
-    body = "".join(cells[index] for index, _ in extract.CELLS)
+    body = "".join(cells[index] for index, _, _ in extract.CELLS)
     for pattern, _, expected in extract.DEVICE_SUBSTITUTIONS:
         assert body.count(pattern) == expected, f"{pattern!r} no longer matches {expected}"
 

@@ -71,6 +71,7 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.11",
   "types-pyyaml",
+  "pandas-stubs",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -133,3 +134,9 @@ python_version = "3.12"
 warn_unused_ignores = true
 warn_redundant_casts = true
 exclude = ["src/nas4av/original/pipeline.py"]
+
+# scikit-learn ships no type information and has no stub package on PyPI that tracks it
+# closely enough to be worth the drift. The call sites are two metric functions.
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "scipy.*"]
+ignore_missing_imports = true
