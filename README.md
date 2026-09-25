@@ -93,9 +93,36 @@ src/nas4av/
   prior/        readers for the previous campaign's published tables
   artifacts.py  provenance-stamped artifact writing
 tests/          unit tests, including the closed-form cost check against PyTorch
+infra/          Terraform for the Azure platform
+scripts/        subscription guard, quota check, Terraform wrapper
 reference/      the previous campaign's repository, obtained not vendored
 artifacts/      generated output
 ```
+
+## Running a campaign
+
+```bash
+.venv/bin/python -m nas4av.cli plan      # enumerate and cost it
+.venv/bin/python -m nas4av.cli rate      # measure seconds per evaluation, per setting
+.venv/bin/python -m nas4av.cli sweep     # run, resuming by default
+.venv/bin/python -m nas4av.cli status    # what is already on disk
+```
+
+The sweep is resumable: each run writes its own artifact when it finishes, and a
+truncated file counts as incomplete rather than done.
+
+On Azure, the platform is declared in `infra/` and applied through a wrapper that asserts
+the pinned subscription first:
+
+```bash
+./scripts/azure_check_quota.sh     # read the allowance Azure ML actually enforces
+./scripts/infra.sh plan
+./scripts/infra.sh apply
+```
+
+The compute is CPU rather than GPU, which is a measurement and not a preference: these
+architectures run about 2.5x faster on CPU than on the GPU the prior campaign used,
+because at this size kernel launch overhead dominates the arithmetic.
 
 ## License
 
