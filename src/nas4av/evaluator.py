@@ -23,6 +23,8 @@ cannot be recovered later.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -113,7 +115,10 @@ class PipelineEvaluator:
         self.keep_scores = keep_scores
         self.scores: dict[str, dict[str, list[float]]] = {}
 
-        self._search_space = original.Sequential_Search_Space(corpus.input_shape)
+        # Constructing the search space builds a probe model, which prints its summary.
+        # Once per unit rather than once per evaluation, but silenced for the same reason.
+        with contextlib.redirect_stdout(io.StringIO()):
+            self._search_space = original.Sequential_Search_Space(corpus.input_shape)
         self._train = self._partition(
             corpus.train_features,
             corpus.train_documents,
@@ -149,37 +154,45 @@ class PipelineEvaluator:
     def __call__(self, genotype: Genotype) -> Measurement:
         started = time.time()
         encoding = ",".join(str(gene) for gene in genotype)
+        # The extracted pipeline prints a model summary and progress lines on every
+        # evaluation. Over a full campaign that is more than a million lines of log that
+        # nobody reads and that buries the lines somebody does. It is captured rather
+        # than discarded, so a failure can still carry what the pipeline said before it
+        # went wrong.
+        chatter = io.StringIO()
         try:
-            model = original.Model(
-                list(genotype),
-                self.corpus.input_shape,
-                self._search_space.genel,
-                self.corpus.input_shape // 2,
-            )
-            # Converts every weight to float64. Not cosmetic: the stored features are
-            # double and nn.Linear builds float32, so an architecture trained without this
-            # raises on its first matrix multiply. ``train_predict`` calls it for the same
-            # reason, and skipping it makes every evaluation fail identically — which is
-            # how it was found.
-            model.weights_init_uniform()
-            model.train()
-            self._search_space.train_model(
-                model,
-                train_embeddings=self._train.features,
-                train_df=self._train.frame,
-                training_cpd=self._train.chunks_per_document,
-                n_epochs=self.epochs,
-                batch_size=BATCH_SIZE,
-                optimizer=OPTIMIZER,
-                lr=LEARNING_RATE,
-                verbose=False,
-            )
-            validation = predict_scores(model, self._validation)
-            test = predict_scores(model, self._test)
+            with contextlib.redirect_stdout(chatter):
+                model = original.Model(
+                    list(genotype),
+                    self.corpus.input_shape,
+                    self._search_space.genel,
+                    self.corpus.input_shape // 2,
+                )
+                # Converts every weight to float64. Not cosmetic: the stored features are
+                # double and nn.Linear builds float32, so an architecture trained without
+                # this raises on its first matrix multiply. ``train_predict`` calls it for
+                # the same reason, and skipping it makes every evaluation fail identically
+                # — which is how it was found.
+                model.weights_init_uniform()
+                model.train()
+                self._search_space.train_model(
+                    model,
+                    train_embeddings=self._train.features,
+                    train_df=self._train.frame,
+                    training_cpd=self._train.chunks_per_document,
+                    n_epochs=self.epochs,
+                    batch_size=BATCH_SIZE,
+                    optimizer=OPTIMIZER,
+                    lr=LEARNING_RATE,
+                    verbose=False,
+                )
+                validation = predict_scores(model, self._validation)
+                test = predict_scores(model, self._test)
         except Exception as error:  # noqa: BLE001
             # Recorded as a failure with its reason, never as a score of zero. The prior
             # pipeline caught everything and wrote zeros into the results table, which is
             # indistinguishable downstream from an architecture that trained and was bad.
+            tail = chatter.getvalue().strip().splitlines()[-3:]
             return Measurement(
                 validation_roc_auc=float("nan"),
                 validation_balanced_accuracy=float("nan"),
@@ -187,7 +200,8 @@ class PipelineEvaluator:
                 test_balanced_accuracy=float("nan"),
                 seconds=time.time() - started,
                 failed=True,
-                detail=f"{type(error).__name__}: {error}",
+                detail=f"{type(error).__name__}: {error}"
+                + (f" | {' / '.join(tail)}" if tail else ""),
             )
 
         if self.keep_scores:
