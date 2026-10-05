@@ -109,7 +109,19 @@ artifacts/      generated output
 ```
 
 The sweep is resumable: each run writes its own artifact when it finishes, and a
-truncated file counts as incomplete rather than done.
+truncated file counts as incomplete rather than done. That also makes it movable — a
+campaign started on one machine resumes on another once its artifacts are copied across,
+because a unit's identity is what it measures rather than where it ran.
+
+For a long campaign, split it across processes by setting and detach each one:
+
+```bash
+screen -dmS arm-a bash -c "./scripts/run-arm.sh 2015/sem 2020/sem > artifacts/arm-a.log 2>&1"
+```
+
+Shards writing into the same artifact directory cannot collide, since disjoint settings
+produce disjoint filenames. Split by measured cost rather than by count, so they finish
+together; `nas4av.cli rate` supplies the rates.
 
 On Azure, the platform is declared in `infra/` and applied through a wrapper that asserts
 the pinned subscription first:
