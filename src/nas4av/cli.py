@@ -4,6 +4,8 @@
     python -m nas4av.cli rate --settings 2015/sem 2020/sem
     python -m nas4av.cli sweep --strategies evolutionary-variant --runs 5
     python -m nas4av.cli status
+    python -m nas4av.cli verify --units <identifier> ...
+    python -m nas4av.cli platform
 
 ``plan`` and ``status`` read nothing heavier than the artifact directory. ``rate`` and
 ``sweep`` need the prior campaign's feature tensors and a torch install, because they
@@ -159,6 +161,43 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_verify(args: argparse.Namespace) -> int:
+    """Re-run stored units and report whether they reproduce."""
+    from .verify import stored_units, verify_many
+
+    identifiers = args.units or stored_units()[: args.limit]
+    if not identifiers:
+        print("  no stored units to verify")
+        return 1
+    print(f"  verifying {len(identifiers)} unit(s)\n")
+    report = verify_many(identifiers, keep_scores=False)
+    for name, verdict in report["verdicts"].items():
+        mark = "ok  " if verdict == "reproduced" else "DIFF"
+        print(f"    [{mark}] {name:<56} {verdict}")
+    print(f"\n  {report['reproduced']} of {report['units']} reproduced")
+    path = write_json("verification/report.json", report)
+    print(f"  written: {path}")
+    return 0 if report["reproduced"] == report["units"] else 1
+
+
+def cmd_platform(args: argparse.Namespace) -> int:
+    """What the stored artifacts say they were produced on."""
+    from .verify import reference_platform
+
+    report = reference_platform(sample=args.sample)
+    for entry in report["environments"]:
+        print(
+            f"  {entry['count']:>4} units   {entry.get('platform')}   "
+            f"torch {entry.get('torch')}   numpy {entry.get('numpy')}   {entry.get('torch_device')}"
+        )
+    if not report["homogeneous"]:
+        print("\n  The campaign is NOT homogeneous. Results from different platforms are")
+        print("  not expected to agree bit-for-bit; regenerate or declare the mix.")
+    path = write_json("verification/platform.json", report)
+    print(f"\n  written: {path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="nas4av", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -195,6 +234,15 @@ def build_parser() -> argparse.ArgumentParser:
     sweeper.add_argument("--no-resume", action="store_true", help="re-run completed units")
     sweeper.add_argument("--no-scores", action="store_true", help="do not keep per-document scores")
     sweeper.set_defaults(func=cmd_sweep)
+
+    verify = sub.add_parser("verify", help="re-run stored units and compare")
+    verify.add_argument("--units", nargs="*", help="identifiers; default the first --limit")
+    verify.add_argument("--limit", type=int, default=3)
+    verify.set_defaults(func=cmd_verify)
+
+    platform = sub.add_parser("platform", help="what the stored artifacts were produced on")
+    platform.add_argument("--sample", type=int, default=0, help="0 reads every artifact")
+    platform.set_defaults(func=cmd_platform)
 
     status = sub.add_parser("status", help="what the artifact directory already holds")
     shared(status)
