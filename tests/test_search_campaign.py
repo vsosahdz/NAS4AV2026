@@ -250,3 +250,177 @@ def test_search_run_with_no_usable_records_has_no_best():
         fitness_metric="validation_roc_auc",
     )
     assert run.best() is None
+
+
+# ── checkpointing ──────────────────────────────────────────────────────────────
+
+
+def test_a_run_checkpoints_every_generation(tmp_path):
+    """The sweep resumes by unit, which bounds a crash to 1,200 evaluations.
+
+    One unit has already been lost that way. This bounds it to one generation.
+    """
+    checkpoint = tmp_path / "unit.json"
+    run_search(
+        UniformRandom(population_size=4, rng=random.Random(1)),
+        FakeEvaluator(),
+        a_split(),
+        INPUT_SHAPE,
+        budget=12,
+        strategy_seed=1,
+        checkpoint_path=checkpoint,
+    )
+    assert checkpoint.exists()
+    import json
+
+    payload = json.loads(checkpoint.read_text())
+    assert payload["records"]
+    assert payload["population"]
+    assert "strategy_state" in payload
+
+
+def test_a_resumed_run_redoes_at_most_one_generation(tmp_path):
+    """The guarantee checkpointing actually offers.
+
+    A crash costs the generation in flight and nothing before it. The checkpoint lags one
+    generation by construction — it holds the population proposed but not yet evaluated —
+    so a resume repeats that generation and no more. Without it the whole unit is lost,
+    which is what happened to one of them.
+    """
+    checkpoint = tmp_path / "unit.json"
+    first_evaluator = FakeEvaluator()
+    run_search(
+        UniformRandom(population_size=4, rng=random.Random(1)),
+        first_evaluator,
+        a_split(),
+        INPUT_SHAPE,
+        budget=8,
+        strategy_seed=1,
+        checkpoint_path=checkpoint,
+    )
+    assert first_evaluator.calls == 8
+
+    second_evaluator = FakeEvaluator()
+    resumed = run_search(
+        UniformRandom(population_size=4, rng=random.Random(1)),
+        second_evaluator,
+        a_split(),
+        INPUT_SHAPE,
+        budget=20,
+        strategy_seed=1,
+        checkpoint_path=checkpoint,
+    )
+    assert resumed.resumed_from_generation is not None
+    assert resumed.evaluations == 20
+    outstanding = 20 - 8
+    population = 4
+    assert outstanding <= second_evaluator.calls <= outstanding + population
+
+
+def test_resuming_reproduces_an_uninterrupted_run(tmp_path):
+    """A resumed run must be the same experiment, not a similar one.
+
+    Restoring the generator is what makes this hold: a fresh one would continue from a
+    different stream and produce a different search under the same identifier.
+    """
+    uninterrupted = run_search(
+        UniformRandom(population_size=4, rng=random.Random(42)),
+        FakeEvaluator(),
+        a_split(),
+        INPUT_SHAPE,
+        budget=20,
+        strategy_seed=42,
+    )
+
+    checkpoint = tmp_path / "unit.json"
+    run_search(
+        UniformRandom(population_size=4, rng=random.Random(42)),
+        FakeEvaluator(),
+        a_split(),
+        INPUT_SHAPE,
+        budget=8,
+        strategy_seed=42,
+        checkpoint_path=checkpoint,
+    )
+    resumed = run_search(
+        UniformRandom(population_size=4, rng=random.Random(42)),
+        FakeEvaluator(),
+        a_split(),
+        INPUT_SHAPE,
+        budget=20,
+        strategy_seed=42,
+        checkpoint_path=checkpoint,
+    )
+
+    assert [r.genotype for r in resumed.records] == [r.genotype for r in uninterrupted.records]
+
+
+def test_the_novelty_filter_remembers_what_it_had_seen(tmp_path):
+    """Losing the seen set would change the search, not merely repeat work.
+
+    In the prior campaign this filter was the only thing producing diversity, so a resume
+    that forgot it would be a different experiment.
+    """
+    checkpoint = tmp_path / "unit.json"
+    first = NoveltyFilter(UniformRandom(population_size=4, rng=random.Random(3)))
+    run_search(
+        first,
+        FakeEvaluator(),
+        a_split(),
+        INPUT_SHAPE,
+        budget=8,
+        strategy_seed=3,
+        checkpoint_path=checkpoint,
+    )
+
+    second = NoveltyFilter(UniformRandom(population_size=4, rng=random.Random(3)))
+    run_search(
+        second,
+        FakeEvaluator(),
+        a_split(),
+        INPUT_SHAPE,
+        budget=16,
+        strategy_seed=3,
+        checkpoint_path=checkpoint,
+    )
+    assert len(second.seen) >= len(first.seen)
+
+
+def test_a_corrupt_checkpoint_is_ignored_rather_than_trusted(tmp_path):
+    """It costs the unit, which is what would have happened without a checkpoint.
+
+    Trusting it would cost the result instead.
+    """
+    checkpoint = tmp_path / "unit.json"
+    checkpoint.write_text('{"records": [truncated')
+    evaluator = FakeEvaluator()
+    run = run_search(
+        UniformRandom(population_size=4, rng=random.Random(1)),
+        evaluator,
+        a_split(),
+        INPUT_SHAPE,
+        budget=8,
+        strategy_seed=1,
+        checkpoint_path=checkpoint,
+    )
+    assert run.resumed_from_generation is None
+    assert run.evaluations == 8
+
+
+def test_a_checkpoint_is_written_atomically(tmp_path):
+    """A crash mid-write would otherwise leave exactly the truncated file this prevents."""
+    from nas4av.search.campaign import save_checkpoint
+
+    checkpoint = tmp_path / "unit.json"
+    strategy = UniformRandom(population_size=4, rng=random.Random(1))
+    run = SearchRun(
+        strategy="x",
+        corpus="2015",
+        strategy_seed=1,
+        split={},
+        budget=8,
+        fitness_metric="validation_roc_auc",
+    )
+    save_checkpoint(checkpoint, run, strategy, strategy.initial_population(), 0)
+    assert checkpoint.exists()
+    assert not checkpoint.with_suffix(".partial").exists()

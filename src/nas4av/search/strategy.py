@@ -27,6 +27,7 @@ import random
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from ..space.genotype import ALPHABET, LENGTH, feasible
 
@@ -87,6 +88,21 @@ class SearchStrategy(ABC):
     @abstractmethod
     def next_generation(self, scored: Sequence[Scored]) -> list[Genotype]:
         """Propose the next population from the last one's fitnesses."""
+
+    def state(self) -> dict[str, Any]:
+        """Everything needed to continue this strategy exactly where it stopped.
+
+        The generator state is the whole of it for a bare strategy, and it is the part
+        that cannot be reconstructed: resuming from a fresh generator would produce a
+        different search from the same seed, which is a different experiment wearing the
+        same identifier.
+        """
+        version, keys, gauss = self._rng.getstate()
+        return {"rng": {"version": version, "keys": list(keys), "gauss": gauss}}
+
+    def restore(self, state: dict[str, Any]) -> None:
+        rng = state["rng"]
+        self._rng.setstate((rng["version"], tuple(rng["keys"]), rng["gauss"]))
 
 
 class UniformRandom(SearchStrategy):
@@ -297,3 +313,26 @@ class NoveltyFilter:
 
     def next_generation(self, scored: Sequence[Scored]) -> list[Genotype]:
         return self._freshen(self.strategy.next_generation(scored))
+
+    def random_genotype(self) -> Genotype:
+        return self.strategy.random_genotype()
+
+    def state(self) -> dict[str, Any]:
+        """The wrapped strategy's state, plus what the filter has seen.
+
+        The seen set has to travel. Resuming without it would let the filter re-propose
+        architectures already evaluated, and since this filter was doing the exploring in
+        the prior search, losing it changes the search rather than just repeating work.
+        """
+        return {
+            "strategy": self.strategy.state(),
+            "seen": [",".join(str(gene) for gene in genotype) for genotype in self.seen],
+            "replacements": self.replacements,
+            "exhausted": self.exhausted,
+        }
+
+    def restore(self, state: dict[str, Any]) -> None:
+        self.strategy.restore(state["strategy"])
+        self.seen = {tuple(int(gene) for gene in entry.split(",")) for entry in state["seen"]}
+        self.replacements = int(state["replacements"])
+        self.exhausted = int(state["exhausted"])

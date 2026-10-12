@@ -98,6 +98,16 @@ class WorkUnit:
     def scores_path(self) -> str:
         return f"sweep/scores/{self.identifier}.json"
 
+    @property
+    def checkpoint_path(self) -> str:
+        """Where this unit's partial state lives while it is running.
+
+        Separate from the artifact directory so a glob over results never picks up a
+        half-finished run, and removed on completion so a stale checkpoint cannot be
+        resumed into a unit that already finished.
+        """
+        return f"checkpoints/{self.identifier}.json"
+
     def build_strategy(self) -> SearchStrategy:
         """Construct the strategy with its own generator, seeded from the unit."""
         strategy = STRATEGIES[self.strategy](
@@ -168,6 +178,7 @@ def run_unit(unit: WorkUnit, keep_scores: bool = True) -> SearchRun:
     split = three_way_split(unit.corpus, corpus.train_labels, corpus.test_labels, seed=unit.seed)
     evaluator = PipelineEvaluator(corpus, split, keep_scores=keep_scores)
 
+    checkpoint = artifacts_root() / unit.checkpoint_path
     started = time.time()
     run = run_search(
         strategy=unit.build_strategy(),
@@ -176,6 +187,7 @@ def run_unit(unit: WorkUnit, keep_scores: bool = True) -> SearchRun:
         input_shape=corpus.input_shape,
         budget=unit.budget,
         strategy_seed=unit.seed,
+        checkpoint_path=checkpoint,
     )
     elapsed = time.time() - started
 
@@ -200,6 +212,11 @@ def run_unit(unit: WorkUnit, keep_scores: bool = True) -> SearchRun:
     )
     if keep_scores and evaluator.scores:
         write_json(unit.scores_path, {"unit": unit.identifier, "scores": evaluator.scores})
+
+    # Removed only once the artifact is written. A checkpoint outliving its unit would be
+    # resumed into a run that already finished; one removed first would lose the unit if
+    # the artifact write failed.
+    checkpoint.unlink(missing_ok=True)
     return run
 
 
@@ -249,3 +266,20 @@ def estimate(
 
 def artifact_directory() -> Path:
     return artifacts_root() / "sweep"
+
+
+def checkpoint_directory() -> Path:
+    return artifacts_root() / "checkpoints"
+
+
+def interrupted() -> list[str]:
+    """Units with a checkpoint but no artifact: stopped partway and resumable.
+
+    Reported rather than silently resumed, because a long list of these means something
+    is killing runs and the campaign should be looked at rather than restarted.
+    """
+    directory = checkpoint_directory()
+    if not directory.is_dir():
+        return []
+    finished = {path.stem for path in artifact_directory().glob("*.json")}
+    return sorted(path.stem for path in directory.glob("*.json") if path.stem not in finished)

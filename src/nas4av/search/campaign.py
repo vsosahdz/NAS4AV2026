@@ -17,9 +17,11 @@ promise to be careful.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
-from typing import Protocol
+from pathlib import Path
+from typing import Any, Protocol
 
 from ..protocol import ProtocolSplit, isolated_randomness
 from ..space.cost import describe
@@ -81,6 +83,10 @@ class SearchRun:
     records: list[EvaluationRecord] = field(default_factory=list)
     novelty_replacements: int = 0
     novelty_exhausted: int = 0
+    #: Set when this run continued from a checkpoint, so an artifact says whether it was
+    #: produced in one sitting. Not a caveat — a resumed run is identical by construction —
+    #: but a reader comparing wall-clock across runs needs it.
+    resumed_from_generation: int | None = None
     #: Set when the run stopped before spending its budget, with the reason. An empty
     #: string means the budget was spent as planned.
     halted: str = ""
@@ -115,6 +121,7 @@ class SearchRun:
             "failures": self.failures,
             "novelty_replacements": self.novelty_replacements,
             "novelty_exhausted": self.novelty_exhausted,
+            "resumed_from_generation": self.resumed_from_generation,
             "best": asdict(best) if best else None,
             "records": [asdict(record) for record in self.records],
         }
@@ -123,6 +130,56 @@ class SearchRun:
 #: Which measurement the search optimises. Validation only — the test fields exist on the
 #: record so a reader can see them afterwards, not so a strategy can select on them.
 FITNESS_METRICS = ("validation_roc_auc", "validation_balanced_accuracy")
+
+
+def save_checkpoint(
+    path: Path,
+    run: SearchRun,
+    strategy: SearchStrategy,
+    population: Sequence[Genotype],
+    generation: int,
+) -> None:
+    """Persist enough to continue this run exactly, after every generation.
+
+    The sweep already resumes at unit granularity, which bounds a crash to one unit — but
+    a unit is 1,200 evaluations and up to an hour and a half, and one has already been
+    lost that way. This bounds it to one generation.
+
+    The stored population is always one that has *not* been evaluated yet. A resume
+    re-evaluates whatever it finds, so storing an already-evaluated population would
+    duplicate that generation.
+
+    Written to a temporary file and moved into place. A crash during the write would
+    otherwise leave a truncated checkpoint, which is the failure the checkpoint exists to
+    prevent, arriving by a different route.
+    """
+    payload = {
+        "generation": generation,
+        "population": [",".join(str(gene) for gene in genotype) for genotype in population],
+        "strategy_state": strategy.state(),
+        "records": [asdict(record) for record in run.records],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".partial")
+    temporary.write_text(json.dumps(payload), encoding="utf-8")
+    temporary.replace(path)
+
+
+def load_checkpoint(path: Path) -> dict[str, Any] | None:
+    """Read a checkpoint, treating an unreadable one as absent.
+
+    A truncated or corrupt checkpoint costs the unit it belongs to, which is what would
+    have happened without it. Trusting it would cost the result instead.
+    """
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(payload, dict) or "records" not in payload:
+        return None
+    return payload
 
 
 def run_search(
@@ -134,6 +191,7 @@ def run_search(
     strategy_seed: int,
     fitness_metric: str = "validation_roc_auc",
     on_generation: Callable[[int, SearchRun], None] | None = None,
+    checkpoint_path: Path | None = None,
 ) -> SearchRun:
     """Spend ``budget`` evaluations and return everything they produced.
 
@@ -161,8 +219,19 @@ def run_search(
         fitness_metric=fitness_metric,
     )
 
-    population = strategy.initial_population()
-    generation = 0
+    resumed = load_checkpoint(checkpoint_path) if checkpoint_path else None
+    if resumed is not None:
+        strategy.restore(resumed["strategy_state"])
+        run.records = [EvaluationRecord(**record) for record in resumed["records"]]
+        population = [
+            tuple(int(gene) for gene in entry.split(",")) for entry in resumed["population"]
+        ]
+        generation = int(resumed["generation"])
+        run.resumed_from_generation = generation
+    else:
+        population = strategy.initial_population()
+        generation = 0
+
     while True:
         remaining = budget - run.evaluations
         if remaining <= 0:
@@ -180,6 +249,13 @@ def run_search(
             break
         population = strategy.next_generation(scored)
         generation += 1
+        if checkpoint_path is not None:
+            # Written only after the next population is proposed, never after a generation
+            # is evaluated. A resume re-evaluates whatever population it finds, so a
+            # checkpoint holding an already-evaluated one duplicates that generation —
+            # which keeps the evaluation count right while corrupting the search, and is
+            # exactly what the first version of this did.
+            save_checkpoint(checkpoint_path, run, strategy, population, generation)
 
     for attribute in ("replacements", "exhausted"):
         value = getattr(strategy, attribute, None)

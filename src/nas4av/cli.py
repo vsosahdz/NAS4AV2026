@@ -150,6 +150,8 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    from .sweep import interrupted
+
     units = _plan_from_args(args)
     done = completed(units)
     directory = artifact_directory()
@@ -158,6 +160,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     remaining = [unit for unit in units if unit.identifier not in done]
     if remaining:
         print(f"  {sum(u.budget for u in remaining):,} evaluations outstanding")
+    partial = interrupted()
+    if partial:
+        print(f"\n  {len(partial)} unit(s) stopped partway and will resume from a checkpoint:")
+        for name in partial[:10]:
+            print(f"    {name}")
+        print("  A long list here means runs are being killed, not that resuming is working.")
     return 0
 
 
