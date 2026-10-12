@@ -329,3 +329,186 @@ def describe_difference(interval_a: Interval, interval_b: Interval) -> dict[str,
             "equivalence, only that this evidence does not distinguish them"
         ),
     }
+
+
+# ── equivalence ────────────────────────────────────────────────────────────────
+#
+# A non-significant frequentist test is not evidence of equivalence, and here that
+# distinction is not academic: the likely finding is that the evolutionary search ties
+# uniform random sampling, and "we found no significant difference" would leave the
+# paper's central comparison in the weakest form available.
+#
+# So differences are also reported against a region of practical equivalence, and the
+# region has a measured origin rather than a chosen one.
+
+
+def rope_from_intervals(intervals: Sequence[Interval]) -> float:
+    """A region of practical equivalence, derived from sampling noise.
+
+    The evaluator is deterministic — identical encodings return identical scores — so
+    there is no seed noise to derive a region from, which is how the sibling project sets
+    one. What remains, and what actually limits this study, is *which documents happened
+    to be in the evaluation set*. A bootstrap over those documents measures it directly.
+
+    The region is the median half-width of the intervals being compared. A difference
+    smaller than that is smaller than the variation resampling the evaluation set would
+    produce, so nobody could act on it, which is what practical equivalence means.
+
+    Reported with every comparison that uses it, because a region chosen after seeing the
+    differences is not a region.
+    """
+    half_widths = [interval.width / 2 for interval in intervals if not np.isnan(interval.width)]
+    if not half_widths:
+        raise ComparisonStructureError("no usable interval to derive a region from")
+    return float(np.median(half_widths))
+
+
+@dataclass(frozen=True)
+class Equivalence:
+    """Where the difference between two treatments sits relative to the region."""
+
+    treatments: tuple[str, str]
+    rope: float
+    rope_origin: str
+    probability_first_better: float
+    probability_equivalent: float
+    probability_second_better: float
+    median_difference: float
+    blocks: int
+
+    @property
+    def verdict(self) -> str:
+        """The three-way reading, stated rather than left to the reader.
+
+        ``inconclusive`` is a real outcome and the most likely one at these block counts;
+        calling it equivalence would be the same error as calling a non-significant test
+        equivalence, one level up.
+        """
+        for probability, label in (
+            (self.probability_equivalent, "practically equivalent"),
+            (self.probability_first_better, f"{self.treatments[0]} better"),
+            (self.probability_second_better, f"{self.treatments[1]} better"),
+        ):
+            if probability >= 0.95:
+                return label
+        return "inconclusive"
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "treatments": list(self.treatments),
+            "rope": round(self.rope, 5),
+            "rope_origin": self.rope_origin,
+            "blocks": self.blocks,
+            "median_difference": round(self.median_difference, 4),
+            "p_first_better": round(self.probability_first_better, 4),
+            "p_equivalent": round(self.probability_equivalent, 4),
+            "p_second_better": round(self.probability_second_better, 4),
+            "verdict": self.verdict,
+        }
+
+
+def equivalence(
+    table: dict[str, dict[str, float]],
+    first: str,
+    second: str,
+    rope: float,
+    rope_origin: str,
+    resamples: int = BOOTSTRAP_RESAMPLES,
+    seed: int = 20261007,
+) -> Equivalence:
+    """Resample the paired per-block differences and ask where they fall.
+
+    Paired by block, because the two treatments were measured on the same corpora and
+    pairing removes the between-corpus variation that otherwise swamps everything. The
+    resample is over blocks rather than over documents: the question is whether the
+    difference holds across settings, not within one.
+    """
+    for name in (first, second):
+        if name not in table:
+            raise ComparisonStructureError(f"{name!r} is not among the treatments")
+
+    blocks = sorted(set(table[first]) & set(table[second]))
+    if not blocks:
+        raise ComparisonStructureError(f"{first!r} and {second!r} share no block")
+
+    differences = np.array([table[first][block] - table[second][block] for block in blocks])
+    rng = np.random.default_rng(seed)
+    means = np.array(
+        [
+            differences[rng.integers(0, differences.size, differences.size)].mean()
+            for _ in range(resamples)
+        ]
+    )
+
+    return Equivalence(
+        treatments=(first, second),
+        rope=rope,
+        rope_origin=rope_origin,
+        probability_first_better=float(np.mean(means > rope)),
+        probability_equivalent=float(np.mean(np.abs(means) <= rope)),
+        probability_second_better=float(np.mean(means < -rope)),
+        median_difference=float(np.median(differences)),
+        blocks=len(blocks),
+    )
+
+
+# ── the two blocking structures ────────────────────────────────────────────────
+
+
+def by_corpus(
+    table: dict[str, dict[str, float]], reduce: str = "mean"
+) -> dict[str, dict[str, float]]:
+    """Collapse per-setting values onto corpora, for the conservative analysis.
+
+    Settings keyed ``corpus/strategy`` become corpora. The two feature strategies of one
+    corpus are measured on the same test documents, so treating them as separate blocks
+    overstates the independent evidence; collapsing them is the price of blocks that are
+    genuinely independent, and the cost is landing at exactly five.
+    """
+    if reduce not in {"mean", "max"}:
+        raise ValueError("reduce must be 'mean' or 'max'")
+    collapsed: dict[str, dict[str, list[float]]] = {}
+    for treatment, blocks in table.items():
+        for setting, value in blocks.items():
+            corpus = setting.split("/")[0]
+            collapsed.setdefault(treatment, {}).setdefault(corpus, []).append(value)
+    return {
+        treatment: {
+            corpus: float(np.mean(values) if reduce == "mean" else np.max(values))
+            for corpus, values in corpora.items()
+        }
+        for treatment, corpora in collapsed.items()
+    }
+
+
+def both_structures(
+    table: dict[str, dict[str, float]],
+    metric: str,
+    control: str | None = None,
+) -> dict[str, object]:
+    """Run the comparison over settings and over corpora, and report both.
+
+    Side by side rather than one or the other. Settings give eleven blocks and usable
+    power at the cost of non-independence, since the two strategies of a corpus share its
+    test documents; corpora give five independent blocks at exactly the conventional floor.
+
+    Agreement between them means the conclusion does not depend on the choice. Disagreement
+    is itself the finding, and reporting only the structure that produced the preferred
+    answer would be the kind of selection this project exists to remove.
+    """
+    per_setting = friedman_with_holm(table, metric=metric, control=control)
+    per_corpus = friedman_with_holm(by_corpus(table), metric=metric, control=control)
+
+    def ordering(comparison: Comparison) -> list[str]:
+        return sorted(comparison.mean_ranks, key=lambda name: comparison.mean_ranks[name])
+
+    return {
+        "per_setting": per_setting.as_dict(),
+        "per_corpus": per_corpus.as_dict(),
+        "orderings_agree": ordering(per_setting) == ordering(per_corpus),
+        "note": (
+            "settings are not independent — the two feature strategies of a corpus share "
+            "its test documents — while corpora are independent but sit at the minimum "
+            "block count. Neither is reported alone."
+        ),
+    }

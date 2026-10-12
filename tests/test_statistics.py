@@ -252,3 +252,160 @@ def test_overlapping_intervals_are_never_reported_as_equivalence():
     result = describe_difference(first, second)
     assert not result["intervals_separate"]
     assert "do not indicate" in result["note"]
+
+
+# ── equivalence ────────────────────────────────────────────────────────────────
+
+
+def test_a_region_is_derived_from_interval_widths_not_chosen():
+    """Its origin has to be a measurement, or it is a knob tuned to the answer."""
+    from nas4av.statistics import rope_from_intervals
+
+    narrow = bootstrap_interval(*separable(n=600, seed=1), seed=7, resamples=800)
+    wide = bootstrap_interval(*separable(n=30, seed=1), seed=7, resamples=800)
+    assert rope_from_intervals([narrow]) < rope_from_intervals([wide])
+    assert rope_from_intervals([narrow, wide]) == pytest.approx(
+        np.median([narrow.width / 2, wide.width / 2])
+    )
+
+
+def test_a_region_cannot_be_derived_from_nothing():
+    from nas4av.statistics import rope_from_intervals
+
+    with pytest.raises(ComparisonStructureError):
+        rope_from_intervals([])
+
+
+def test_two_treatments_that_tie_are_called_equivalent_not_undecided():
+    """The result a frequentist test cannot express, which is why this exists."""
+    from nas4av.statistics import equivalence
+
+    blocks = {f"c{i}": 0.70 for i in range(11)}
+    result = equivalence(
+        table(a=dict(blocks), b=dict(blocks)), "a", "b", rope=0.02, rope_origin="test"
+    )
+    assert result.probability_equivalent == 1.0
+    assert result.verdict == "practically equivalent"
+
+
+def test_a_clear_winner_is_called_a_winner():
+    from nas4av.statistics import equivalence
+
+    result = equivalence(
+        table(
+            a={f"c{i}": 0.80 for i in range(11)},
+            b={f"c{i}": 0.60 for i in range(11)},
+        ),
+        "a",
+        "b",
+        rope=0.02,
+        rope_origin="test",
+    )
+    assert result.probability_first_better == 1.0
+    assert result.verdict == "a better"
+
+
+def test_a_difference_smaller_than_the_region_is_not_a_win():
+    """Below the noise that resampling the evaluation set would produce."""
+    from nas4av.statistics import equivalence
+
+    result = equivalence(
+        table(
+            a={f"c{i}": 0.705 for i in range(11)},
+            b={f"c{i}": 0.700 for i in range(11)},
+        ),
+        "a",
+        "b",
+        rope=0.02,
+        rope_origin="test",
+    )
+    assert result.verdict == "practically equivalent"
+
+
+def test_a_scattered_difference_is_inconclusive_rather_than_equivalent():
+    """The most likely outcome at these block counts, and it must have its own name."""
+    from nas4av.statistics import equivalence
+
+    rng = np.random.default_rng(5)
+    result = equivalence(
+        table(
+            a={f"c{i}": 0.70 + float(rng.normal(0, 0.08)) for i in range(5)},
+            b={f"c{i}": 0.70 + float(rng.normal(0, 0.08)) for i in range(5)},
+        ),
+        "a",
+        "b",
+        rope=0.005,
+        rope_origin="test",
+    )
+    assert result.verdict == "inconclusive"
+
+
+def test_equivalence_records_where_its_region_came_from():
+    from nas4av.statistics import equivalence
+
+    result = equivalence(
+        table(a={"c1": 0.7, "c2": 0.7}, b={"c1": 0.7, "c2": 0.7}),
+        "a",
+        "b",
+        rope=0.01,
+        rope_origin="median half-width of bootstrap intervals",
+    )
+    assert "bootstrap" in result.as_dict()["rope_origin"]
+
+
+# ── the two blocking structures ────────────────────────────────────────────────
+
+
+def test_settings_collapse_onto_corpora():
+    from nas4av.statistics import by_corpus
+
+    collapsed = by_corpus(
+        table(
+            a={"2015/sem": 0.70, "2015/synBetter": 0.80, "2020/sem": 0.60},
+            b={"2015/sem": 0.50, "2015/synBetter": 0.60, "2020/sem": 0.40},
+        )
+    )
+    assert collapsed["a"] == {"2015": pytest.approx(0.75), "2020": pytest.approx(0.60)}
+    assert set(collapsed["b"]) == {"2015", "2020"}
+
+
+def test_both_structures_are_reported_and_their_agreement_stated():
+    """Reporting only the structure that gave the preferred answer would be selection."""
+    from nas4av.statistics import both_structures
+
+    settings = [
+        f"{c}/{s}"
+        for c in ("2013", "2014Essay2", "2014Novel2", "2015", "2020")
+        for s in ("sem", "synBetter")
+    ]
+    result = both_structures(
+        table(
+            strong={s: 0.80 for s in settings},
+            middle={s: 0.70 for s in settings},
+            weak={s: 0.60 for s in settings},
+        ),
+        metric="roc_auc",
+    )
+    assert result["per_setting"]["block_count"] == 10
+    assert result["per_corpus"]["block_count"] == 5
+    assert result["orderings_agree"]
+    assert "not independent" in result["note"]
+
+
+def test_the_corpus_analysis_sits_at_the_power_floor():
+    """Five corpora is exactly the conventional minimum, which is why both are reported."""
+    from nas4av.statistics import both_structures
+
+    settings = [
+        f"{c}/{s}"
+        for c in ("2013", "2014Essay2", "2014Novel2", "2015", "2020")
+        for s in ("sem", "synBetter")
+    ]
+    result = both_structures(
+        table(
+            a={s: 0.8 for s in settings}, b={s: 0.7 for s in settings}, c={s: 0.6 for s in settings}
+        ),
+        metric="roc_auc",
+    )
+    assert not result["per_corpus"]["underpowered"]
+    assert result["per_corpus"]["block_count"] == MINIMUM_BLOCKS
