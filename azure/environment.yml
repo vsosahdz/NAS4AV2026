@@ -1,0 +1,15 @@
+# The job environment, pinned and versioned.
+#
+# Built from a curated PyTorch base rather than from a Dockerfile of our own. The base
+# carries the CUDA runtime the T4 nodes expose, which this sweep does not use but the
+# transformer baseline will, and building our own would mean maintaining a CUDA image to
+# run work that is CPU-bound.
+#
+# The package set is the project's own, installed from the repository that travels with
+# each job, so the environment pins the runtime and the job pins the code.
+$schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
+name: nas4av
+description: >-
+  Python 3.12 with the project installed from source. The image digest is recorded with
+  every job, so a result can be traced to the runtime that produced it.
+image: mcr.microsoft.com/azureml/curated/acpt-pytorch-2.2-cuda12.1:latest

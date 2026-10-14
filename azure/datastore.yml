@@ -1,0 +1,11 @@
+# The data of record, mounted read-only by every job.
+#
+# A datastore of its own rather than the workspace default: the default is where Azure ML
+# puts job snapshots and logs, and mixing the corpora into it would make "the data this
+# ran on" a question about which folder rather than which datastore.
+$schema: https://azuremlschemas.azureedge.net/latest/azureBlob.schema.json
+name: cache
+type: azure_blob
+description: Corpora and feature tensors, uploaded once and read from here by every job.
+account_name: nas4av7m07ib
+container_name: cache

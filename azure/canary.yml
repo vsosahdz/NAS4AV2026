@@ -1,0 +1,49 @@
+# The canary that gates the fan-out.
+#
+# One unit on the cheapest setting. Its purpose is not the result -- the mini is producing
+# those -- but to demonstrate end to end that the platform works: the image resolves, the
+# code uploads, the cache mounts, a spot node schedules the job, the artifact lands in the
+# outputs, and the cluster returns to zero.
+#
+# A failing canary blocks the sweep. That is the rule the sibling project's spec states and
+# the reason this runs before anything larger.
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+experiment_name: nas4av-canary
+display_name: canary-2013-sem-uniform-random
+
+code: ..
+environment: azureml:nas4av@latest
+compute: azureml:sweep-spot
+
+inputs:
+  cache:
+    type: uri_folder
+    mode: ro_mount
+    path: azureml://datastores/cache/paths/
+
+outputs:
+  results:
+    type: uri_folder
+    mode: rw_mount
+
+# A wall-clock limit, because an idle window cannot catch a hung job: it holds its node
+# and bills until somebody notices. Twenty minutes is generous for a 120-evaluation unit
+# on the cheapest setting, and short enough that a hang is cheap.
+limits:
+  timeout: 1200
+
+environment_variables:
+  NAS4AV_ARTIFACTS: ${{outputs.results}}
+  NAS4AV_REFERENCE: ${{inputs.cache}}
+  PYTHONWARNINGS: ignore
+  PYTHONHASHSEED: "0"
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+
+command: >-
+  pip install --quiet -e . &&
+  python -m nas4av.cli sweep
+  --settings 2013/sem
+  --strategies uniform-random
+  --runs 1
+  --budget 120

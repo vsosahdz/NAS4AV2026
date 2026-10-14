@@ -1,0 +1,14 @@
+# What does not travel with a job snapshot.
+#
+# The reference clone is 135 MB and is already in the cache datastore; uploading it with
+# every job would pay for it again each time and make the snapshot a second, unversioned
+# copy of the data of record.
+reference/
+artifacts/
+.venv/
+.git/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+openspec
