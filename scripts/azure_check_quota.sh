@@ -25,23 +25,47 @@ az extension show --name ml >/dev/null 2>&1 || {
 }
 
 LOCATION="$(read_var location)"
-SKU="$(read_var cpu_sku)"
+SKU="$(read_var sweep_sku)"
+MEASURE_SKU="$(read_var measurement_sku)"
+MEASURE_PER="$(read_var measurement_units_per_node)"
 SWEEP="$(read_var sweep_max_nodes)"
 MEASURE="$(read_var measurement_max_nodes)"
 PER_NODE="$(read_var units_per_node)"
-DECLARED="$(read_var family_quota_vcpu)"
 
 echo
 echo "  region      $LOCATION"
-echo "  sku         $SKU"
-echo "  planned     ($SWEEP + $MEASURE) nodes x $PER_NODE vCPU = $(( (SWEEP + MEASURE) * PER_NODE ))"
-echo "  declared    $DECLARED vCPU in target.tfvars"
+echo "  sweep sku   $SKU"
+echo "  measure sku $MEASURE_SKU"
+echo "  planned     spot      $SWEEP nodes x $PER_NODE vCPU = $(( SWEEP * PER_NODE ))"
+echo "              dedicated $MEASURE node(s) x $MEASURE_PER vCPU = $(( MEASURE * MEASURE_PER ))"
+echo
+
+echo "  --- is the SKU supported by Azure ML at all ---"
+echo "  Azure ML keeps its own allow-list of VM sizes, narrower than what the subscription"
+echo "  permits. A size can be unrestricted for the subscription and still be refused at"
+echo "  cluster creation as InvalidPropertyValue. This subscription has NO CPU size that"
+echo "  is both ML-supported and available, in this region or in eastus2 — it was"
+echo "  provisioned for GPU work, so the sweep runs on a T4 and uses its vCPUs."
 echo
 
 echo "  --- Azure ML quota, the counter that is enforced ---"
-az ml compute list-usage --location "$LOCATION" \
-  --query "[?contains(name.localizedValue, 'Standard F') || contains(name.localizedValue, 'Total')].{family:name.localizedValue, used:currentValue, limit:limit}" \
-  -o table 2>/dev/null || echo "  (could not read; check the extension and your permissions)"
+echo "  Dedicated and low-priority are granted SEPARATELY for the same family, and they"
+echo "  are nothing alike here: 4 dedicated vCPU against an uncapped low-priority. Sizing"
+echo "  both clusters against one number makes the dedicated one impossible."
+echo
+WORKSPACE="$(az ml workspace list -g nas4av-rg --query "[0].name" -o tsv 2>/dev/null)"
+if [ -n "$WORKSPACE" ]; then
+  az ml compute list-usage -g nas4av-rg -w "$WORKSPACE" -o json 2>/dev/null | python3 -c "
+import json,sys
+for row in json.load(sys.stdin):
+    name = row.get('name') or {}
+    label = name.get('localized_value') or name.get('localizedValue') or ''
+    if 'NC' in label.upper() or 'Total' in label:
+        print(f\"    {label:<48}{row.get('current_value', row.get('currentValue')):>5} / {row.get('limit')}\")
+" || echo "  (could not read the workspace usage)"
+else
+  echo "  (no workspace yet — the enforced counter is per workspace; apply the platform first)"
+fi
 
 echo
 echo "  --- Microsoft.Compute quota, for contrast, NOT the one that binds ---"

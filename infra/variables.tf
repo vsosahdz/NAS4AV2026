@@ -23,17 +23,35 @@ variable "location" {
   }
 }
 
-variable "cpu_sku" {
+variable "sweep_sku" {
   description = <<-EOT
-    VM size for both clusters. CPU rather than GPU, by measurement rather than by
-    preference: these architectures peak in the low millions of parameters on batches of
-    four and run about 2.5x faster on CPU than on the GPU the prior campaign used,
-    because at this size kernel launch overhead dominates the arithmetic.
+    VM size for the spot sweep cluster.
 
-    A GPU SKU here would cost more, contend for scarcer quota, and run slower.
+    The work is CPU-bound — these architectures peak in the low millions of parameters on
+    batches of four and run about 2.5x faster on CPU than on the GPU the prior campaign
+    used — so a CPU SKU is what it wants. It is not what this subscription offers: every
+    CPU size Azure ML supports is NotAvailableForSubscription here and in the fallback
+    region, because the subscription was provisioned for GPU work. T4 nodes are available.
+
+    So the sweep runs on a T4 node and uses its vCPUs, leaving the GPU idle. Wasteful in
+    principle, nearly free on spot, and the same node then serves the one task that does
+    want a GPU: fine-tuning the strong-input transformer baseline.
   EOT
   type        = string
-  default     = "Standard_F16s_v2"
+  default     = "Standard_NC16as_T4_v3"
+}
+
+variable "measurement_sku" {
+  description = <<-EOT
+    VM size for the dedicated measurement cluster, which is a different size on purpose.
+
+    The dedicated allowance for this family is **4 vCPU** — one small node, total. Spot is
+    governed only by the regional low-priority cap. Sizing both clusters alike would make
+    the dedicated one impossible, so the measurement cluster takes the smallest T4 and the
+    sweep takes a large one.
+  EOT
+  type        = string
+  default     = "Standard_NC4as_T4_v3"
 }
 
 variable "units_per_node" {
@@ -51,8 +69,38 @@ variable "units_per_node" {
   }
 }
 
-variable "family_quota_vcpu" {
+variable "measurement_units_per_node" {
+  description = "vCPU on one measurement node, which is a smaller SKU than the sweep's."
+  type        = number
+  default     = 4
+}
+
+variable "dedicated_quota_vcpu" {
   description = <<-EOT
+    Granted **dedicated** vCPU for the SKU family under Microsoft.MachineLearningServices
+    in this region. Read with scripts/azure_check_quota.sh.
+
+    Separate from the low-priority allowance and far smaller: this subscription grants 4
+    dedicated against an uncapped low-priority. A single allowance covering both, which an
+    earlier version of this configuration assumed, makes the dedicated cluster impossible
+    to size.
+  EOT
+  type        = number
+}
+
+variable "lowpriority_quota_vcpu" {
+  description = <<-EOT
+    Granted **low-priority** vCPU, which for this family is governed by the regional cap
+    rather than by a family limit of its own.
+  EOT
+  type        = number
+}
+
+variable "unused_family_quota_vcpu" {
+  description = <<-EOT
+    Retained so an existing target.tfvars does not break. Superseded by the split
+    dedicated and low-priority allowances above.
+
     Granted vCPU for the SKU's family under **Microsoft.MachineLearningServices** in this
     region — not the Microsoft.Compute quota that `az vm list-usage` reports. Azure ML
     enforces its own counter for the same family and the two are granted independently;
@@ -65,6 +113,7 @@ variable "family_quota_vcpu" {
     rather than against running cores.
   EOT
   type        = number
+  default     = 0
 }
 
 variable "sweep_max_nodes" {
