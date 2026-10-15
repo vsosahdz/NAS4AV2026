@@ -40,8 +40,27 @@ environment_variables:
   OMP_NUM_THREADS: "1"
   MKL_NUM_THREADS: "1"
 
+# `uv pip` rather than `pip`, which is not a style preference. The image's environment is
+# built by `uv sync`, and a uv-created environment has no pip in it — so a bare `pip` falls
+# through to the base image's conda installation and installs the project somewhere the
+# job's interpreter never looks. That failure is quiet in the worst way: pip reports
+# success, and the job dies afterwards on `No module named 'nas4av'` as though the code had
+# not been uploaded.
+#
+# `--no-deps` is load-bearing. The image is built from uv.lock and is meant to be sealed: a
+# job supplies code, never dependencies. Without the flag the installer is free to resolve
+# something the lock does not mention, and the job would run on an environment that no
+# longer matches the reference platform while still reporting the image it started from.
+#
+# The platform line is printed before the sweep rather than after, so a mismatch is visible
+# in the log of a job that then fails for some other reason. It also answers a question
+# this configuration deliberately does not assert anywhere else: a PyPI torch wheel bundles
+# its own CUDA runtime, and which compute capabilities it was built for is a fact about the
+# wheel rather than about this file.
 command: >-
-  pip install --quiet -e . &&
+  uv pip install --quiet --no-deps -e . &&
+  python -c "import sys, torch; print('platform:', sys.version.split()[0], 'torch', torch.__version__, '| cuda', torch.cuda.is_available(), '| arch', torch.cuda.get_arch_list() if torch.cuda.is_available() else 'n/a')" &&
+  (nvidia-smi --query-gpu=name,driver_version --format=csv,noheader || echo "no nvidia-smi") &&
   python -m nas4av.cli sweep
   --settings 2013/sem
   --strategies uniform-random

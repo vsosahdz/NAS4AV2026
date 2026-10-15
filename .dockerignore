@@ -1,0 +1,15 @@
+# The image build context, as an allowlist.
+#
+# The build needs three files. The repository is 135 MB larger than that, mostly the
+# reference clone, and a build context is uploaded before anything in it is read — so a
+# denylist that forgets one directory pays for it on every rebuild.
+#
+# Excluding everything first and naming what is needed also keeps the image honest about
+# its inputs: nothing can be baked in by accident, so the code genuinely arrives with the
+# job snapshot rather than sometimes with the image.
+*
+
+!pyproject.toml
+!uv.lock
+!README.md
+!azure/docker/Dockerfile

@@ -1,15 +1,27 @@
-# The job environment, pinned and versioned.
+# The job environment, built rather than borrowed.
 #
-# Built from a curated PyTorch base rather than from a Dockerfile of our own. The base
-# carries the CUDA runtime the T4 nodes expose, which this sweep does not use but the
-# transformer baseline will, and building our own would mean maintaining a CUDA image to
-# run work that is CPU-bound.
+# An earlier version of this file named a curated Azure ML PyTorch image, on the reasoning
+# that building a CUDA image to run CPU-bound work is wasted effort. The reasoning held;
+# the image did not. Curated images pin their own Python and their own torch — 3.10 and
+# 2.2 here — and this project's reference platform is a Mac mini running 3.12 and 2.14.1.
+# Numbers produced under the curated image could not be compared with the ones the mini is
+# producing, which is the only reason to run anything on Azure at all.
 #
-# The package set is the project's own, installed from the repository that travels with
-# each job, so the environment pins the runtime and the job pins the code.
+# So the image is built from azure/docker/Dockerfile against uv.lock, and the versions
+# inside it are a consequence of that lock rather than of a vendor's release schedule. The
+# base carries no CUDA: a PyPI torch wheel for Linux brings its own runtime and needs only
+# the host's driver.
 $schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
 name: nas4av
 description: >-
-  Python 3.12 with the project installed from source. The image digest is recorded with
-  every job, so a result can be traced to the runtime that produced it.
-image: mcr.microsoft.com/azureml/curated/acpt-pytorch-2.2-cuda12.1:latest
+  Python 3.12.8 with torch 2.14.1, built from uv.lock so the environment matches the
+  reference platform. The image digest is recorded with every job, so a result can be
+  traced to the runtime that produced it.
+
+# The context is the repository root because the lock lives there, narrowed to three files
+# by .dockerignore. Pointing it at azure/docker/ instead would mean keeping a second copy
+# of pyproject.toml and uv.lock beside the Dockerfile, and a copied lock is a lock that
+# drifts.
+build:
+  path: ..
+  dockerfile_path: azure/docker/Dockerfile

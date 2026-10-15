@@ -78,27 +78,32 @@ dev = [
 packages = ["src/nas4av"]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PyTorch index, declared here and not in prose.
+# PyTorch resolves from PyPI on every platform, which is a correction.
 #
-# If a reader has to remember to pass --extra-index-url, then "resolves from the
-# lockfile alone" fails on first contact with a stranger.
+# An earlier version pinned Linux to the cu121 index so that a CUDA build would
+# resolve without anyone remembering --extra-index-url. The reasoning was sound
+# and the consequence was not: that index stops at torch 2.5.1, so it cannot
+# serve the version the reference platform runs. A pin that cannot express the
+# reference version is not a pin, it is a silent downgrade — Linux would have
+# held five minor versions behind the Mac mini while both satisfied the
+# `torch>=2.4` range below, and nothing in either environment would have said so.
 #
-# The prior campaign ran on an sm_75 device. CUDA 12.1 supports it and is broadly
-# driver-compatible; this pin must be validated against the driver in the target
-# VM image before a campaign runs.
+# That is not hypothetical. It already happened once at smaller scale: two
+# machines resolved 2.13.0 and 2.14.1 from the same range, and the seven units
+# evaluated under the first had to be discarded. The fix is uv.lock, which turns
+# the resolution from a range into a committed fact; this source pin had to go
+# because the lock cannot be satisfied on Linux while it stands.
 #
-# The marker keeps macOS and CPU-only Linux resolving torch from PyPI, so the
-# `train` extra stays installable for local development without CUDA. That
-# matters here: the model uses float64 BatchNorm, which Apple MPS does not
-# support, so local runs are CPU runs.
+# Nothing is lost by dropping it. A PyPI `torch` wheel for Linux bundles its own
+# CUDA runtime as nvidia-* dependencies, so it needs a driver from the host and
+# not a CUDA image underneath it. Which compute capabilities that wheel actually
+# carries is a question about the wheel rather than about the index, so the
+# canary reports `torch.cuda.get_arch_list()` from the target node instead of
+# this comment asserting it.
+#
+# macOS is unaffected and was never the problem: the model uses float64
+# BatchNorm, which Apple MPS does not support, so local runs are CPU runs.
 # ─────────────────────────────────────────────────────────────────────────────
-[[tool.uv.index]]
-name = "pytorch-cu121"
-url = "https://download.pytorch.org/whl/cu121"
-explicit = true
-
-[tool.uv.sources]
-torch = [{ index = "pytorch-cu121", marker = "sys_platform == 'linux'" }]
 
 [tool.ruff]
 line-length = 100
