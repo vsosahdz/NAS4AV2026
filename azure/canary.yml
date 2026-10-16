@@ -32,9 +32,13 @@ outputs:
 limits:
   timeout: 1200
 
+# NAS4AV_ARTIFACTS and NAS4AV_REFERENCE are deliberately absent here and set in the command
+# instead. Azure ML expands `${{inputs.x}}` and `${{outputs.x}}` inside `command` and not
+# inside `environment_variables`, so declaring them here hands the process the literal nine
+# characters `${{inputs.cache}}` as a path. Nothing warns: the job starts, the mount is
+# fine, and it fails much later on a FileNotFoundError whose path has the unexpanded
+# placeholder sitting in the middle of it.
 environment_variables:
-  NAS4AV_ARTIFACTS: ${{outputs.results}}
-  NAS4AV_REFERENCE: ${{inputs.cache}}
   PYTHONWARNINGS: ignore
   PYTHONHASHSEED: "0"
   OMP_NUM_THREADS: "1"
@@ -58,6 +62,7 @@ environment_variables:
 # its own CUDA runtime, and which compute capabilities it was built for is a fact about the
 # wheel rather than about this file.
 command: >-
+  export NAS4AV_REFERENCE=${{inputs.cache}} NAS4AV_ARTIFACTS=${{outputs.results}} &&
   uv pip install --quiet --no-deps -e . &&
   python -c "import sys, torch; print('platform:', sys.version.split()[0], 'torch', torch.__version__, '| cuda', torch.cuda.is_available(), '| arch', torch.cuda.get_arch_list() if torch.cuda.is_available() else 'n/a')" &&
   (nvidia-smi --query-gpu=name,driver_version --format=csv,noheader || echo "no nvidia-smi") &&

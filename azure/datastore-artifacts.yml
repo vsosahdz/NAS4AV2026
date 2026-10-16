@@ -1,0 +1,21 @@
+# Where results land, separate from where Azure ML keeps its own bookkeeping.
+#
+# A job's default output path is per-job: `azureml://.../<job-name>/results/`. That is the
+# right default and it makes one property impossible — a retried unit cannot see what the
+# interrupted attempt already did, because the retry is a different job with a different
+# path.
+#
+# That property is the whole basis of running the sweep on spot compute. A unit
+# checkpoints every generation, so an eviction costs minutes rather than the unit; but only
+# if the resumed attempt can find the checkpoint. Pinning results to a container of their
+# own, addressed by what a unit *is* rather than by which job happened to run it, is what
+# makes a preempted unit resumable instead of merely restartable.
+#
+# Separate from `cache` in the other direction: that one is mounted read-only everywhere,
+# because a job that can write to the data of record can modify what it is reading.
+$schema: https://azuremlschemas.azureedge.net/latest/azureBlob.schema.json
+name: artifacts
+type: azure_blob
+description: Campaign results and per-generation checkpoints, written by jobs and read back on resume.
+account_name: nas4av7m07ib
+container_name: artifacts

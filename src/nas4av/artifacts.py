@@ -69,10 +69,22 @@ def provenance() -> dict[str, Any]:
         except metadata.PackageNotFoundError:
             versions[name] = "absent"
 
+    # A job snapshot carries no .git directory — it is excluded so that a 135 MB history
+    # is not uploaded with every job — so `git rev-parse` returns nothing on a compute
+    # node and the artifact would record a null revision. That is the one field a remote
+    # artifact most needs: locally the working tree is right there to inspect, and on a
+    # node that has been deallocated for an hour it is the only way back to the code.
+    #
+    # So the submitter may state it, and the environment is trusted only where git cannot
+    # answer. A declared revision never overrides an observed one: if git is available,
+    # what is on disk wins over what someone asserted at submit time.
+    revision = _git("rev-parse", "HEAD")
     status = _git("status", "--porcelain")
+    declared = os.environ.get("NAS4AV_GIT_REVISION") or None
     return {
         "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "git_revision": _git("rev-parse", "HEAD"),
+        "git_revision": revision or declared,
+        "git_revision_source": "git" if revision else ("declared" if declared else None),
         "git_dirty": None if status is None else bool(status),
         "python": platform.python_version(),
         "platform": platform.platform(),

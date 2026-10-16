@@ -1,0 +1,57 @@
+# The deliberate interruption that gates the fan-out.
+#
+# Spot compute is only cheap if an eviction costs the generation in flight rather than the
+# unit. That property is asserted in three places — the checkpoint is written only after
+# `next_generation`, the RNG state travels with it, and a truncated artifact is treated as
+# incomplete — and asserting it is not the same as having it. Preemption is the one failure
+# mode that cannot be tested by thinking about it, because what it exercises is the
+# boundary between a process and the storage that outlives it.
+#
+# So it is caused rather than waited for: run the unit, kill it partway, run it again, and
+# compare what comes out against the artifact the uninterrupted canary produced. The
+# comparison is on results and not on bytes — a resumed run records `resumed_from_generation`
+# and a later `written_at`, and should — so "indistinguishable" means every evaluation, in
+# order, with the same fitness.
+#
+# Driven by scripts/azure_preemption_test.sh, which owns the kill and the comparison.
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+experiment_name: nas4av-preemption
+display_name: preemption-2013-sem-uniform-random
+
+code: ..
+environment: azureml:nas4av@latest
+compute: azureml:sweep-spot
+
+inputs:
+  cache:
+    type: uri_folder
+    mode: ro_mount
+    path: azureml://datastores/cache/paths/
+
+# Pinned, which is the point of this job. A default output path is per-job, so a second
+# attempt would start from nothing and the test would prove only that the unit can run
+# twice. Addressed by what the unit is, the retry finds the checkpoint the first attempt
+# left behind — which is exactly what Azure ML's own retry after an eviction does.
+outputs:
+  results:
+    type: uri_folder
+    mode: rw_mount
+    path: azureml://datastores/artifacts/paths/preemption-test/
+
+limits:
+  timeout: 1200
+
+environment_variables:
+  PYTHONWARNINGS: ignore
+  PYTHONHASHSEED: "0"
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+
+command: >-
+  export NAS4AV_REFERENCE=${{inputs.cache}} NAS4AV_ARTIFACTS=${{outputs.results}} &&
+  uv pip install --quiet --no-deps -e . &&
+  python -m nas4av.cli sweep
+  --settings 2013/sem
+  --strategies uniform-random
+  --runs 1
+  --budget 120
