@@ -171,8 +171,16 @@ for index, (left, right) in enumerate(zip(a["records"], b["records"])):
         if field in left and left[field] != right[field]:
             fail(f"record {index} differs on {field}: {left[field]} vs {right[field]}")
 
-if a["best"] != b["best"]:
-    fail(f"best differs: {a['best']} vs {b['best']}")
+# Timing is excluded from every comparison, here and in the records above. `seconds` is how
+# long an evaluation took, not what it found: the same architecture on the same data took
+# 2.3966 s before the interruption and 2.3570 s after, which is a property of the node and
+# would fail a test of reproducibility that nothing can pass.
+TIMING = {"seconds"}
+left = {k: v for k, v in a["best"].items() if k not in TIMING}
+right = {k: v for k, v in b["best"].items() if k not in TIMING}
+if left != right:
+    differing = {k for k in left.keys() | right.keys() if left.get(k) != right.get(k)}
+    fail(f"best differs on {sorted(differing)}: {left} vs {right}")
 
 print(f"resumed from generation {generation}")
 print(f"{len(b['records'])} evaluations identical to the uninterrupted run, including the best")
