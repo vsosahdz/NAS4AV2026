@@ -20,7 +20,13 @@ cd "$(dirname "$0")/.."
 REFERENCE="${1:?usage: azure_preemption_test.sh <uninterrupted-artifact.json>}"
 RESOURCE_GROUP="${NAS4AV_RESOURCE_GROUP:-nas4av-rg}"
 WORKSPACE="${NAS4AV_WORKSPACE:-nas4av-ws}"
-KILL_AFTER="${NAS4AV_KILL_AFTER:-150}"
+# Measured from when the job reports Running, which is earlier than when the command
+# starts: the node still has to pull the image, download the snapshot and install the
+# project. A first attempt killed before it finishes a generation leaves no checkpoint, the
+# retry starts from nothing, and the test reports a restart without saying why. The canary
+# took about 110 s to reach its first evaluation and runs a 24-individual generation in
+# roughly 55 s, so this lands a few generations in.
+KILL_AFTER="${NAS4AV_KILL_AFTER:-300}"
 JOB_FILE="azure/preemption-test.yml"
 STORE="artifacts"
 PREFIX="preemption-test"
@@ -76,6 +82,27 @@ echo "  running; letting it work for ${KILL_AFTER}s before cancelling"
 sleep "${KILL_AFTER}"
 az ml job cancel -n "${FIRST}" >/dev/null
 echo "  cancelled: $(wait_for_end "${FIRST}")"
+
+# Checked here rather than inferred from the outcome. Without this, a first attempt killed
+# before it finished a generation produces exactly the same ending as a resume that failed
+# to read a checkpoint that was there — and those need different fixes.
+echo "  checkpoints left behind:"
+LEFT="$(command az storage blob list --account-name "${ACCOUNT}" --container-name "${STORE}" \
+  --prefix "${PREFIX}/checkpoints/" --auth-mode login --query "[].name" -o tsv 2>/dev/null || true)"
+if [[ -z "${LEFT}" ]]; then
+  cat >&2 <<EOF
+
+The interrupted attempt wrote no checkpoint, so there is nothing for a retry to resume
+from and the test cannot distinguish a working resume from a broken one.
+
+A checkpoint is written only after a generation completes. Either the kill landed before
+the first one finished -- raise NAS4AV_KILL_AFTER, currently ${KILL_AFTER}s -- or writes
+to the mounted output are not reaching blob storage when the container dies, which is the
+finding this test exists to surface.
+EOF
+  exit 1
+fi
+echo "${LEFT}" | sed 's/^/    /'
 
 echo "=== attempt 2: must resume, not restart ==="
 SECOND="$(submit)"

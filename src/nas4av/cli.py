@@ -206,6 +206,131 @@ def cmd_platform(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_structure(args: argparse.Namespace) -> int:
+    """What the genotype says about performance, attributed to nameable features.
+
+    The source is an argument rather than an assumption, and the choice is a real one.
+    The legacy database is 66,000 evaluations selected on test and scored with balanced
+    accuracy under the name AUC, so it describes a searched population rather than a
+    measured one; the clean campaign is smaller and sound. Running the same analysis over
+    both is what separates "this is what the rebuild changes" from "this is what the new
+    data says", and those are different claims.
+    """
+    from .structure import (
+        consecutive_run,
+        encode_many,
+        enrichment,
+        family_groups,
+        grouped_permutation_importance,
+        null_probability_of_run,
+        position_groups,
+        split_frequency,
+    )
+
+    population = _structure_population(args)
+    if len(population) < args.minimum:
+        print(f"  {len(population)} evaluations is below the floor of {args.minimum}")
+        return 1
+
+    import numpy as np
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.model_selection import train_test_split
+
+    encodings = [encoding for encoding, _ in population]
+    scores = np.array([score for _, score in population], dtype=np.float64)
+    features = encode_many(encodings)
+
+    # Importance is read on data the model did not fit. On the training split a forest can
+    # memorise 66,000 rows, and permuting a column then measures how much of its own fit it
+    # loses rather than how much the feature predicts.
+    train_x, test_x, train_y, test_y = train_test_split(
+        features, scores, test_size=0.3, random_state=args.seed
+    )
+    model = RandomForestRegressor(
+        n_estimators=args.trees, random_state=args.seed, n_jobs=-1, min_samples_leaf=5
+    )
+    model.fit(train_x, train_y)
+    fit = {"train_r2": float(model.score(train_x, train_y)), "test_r2": float(model.score(test_x, test_y))}
+    print(f"  {len(population)} evaluations   R² train {fit['train_r2']:.3f}   test {fit['test_r2']:.3f}")
+    if fit["test_r2"] <= 0:
+        print("  The model does not predict out of sample, so no importance read off it means")
+        print("  anything. Reported below for the record, and not as evidence.")
+
+    by_family = grouped_permutation_importance(model, test_x, test_y, family_groups(), repeats=args.repeats, seed=args.seed)
+    by_position = grouped_permutation_importance(model, test_x, test_y, position_groups(), repeats=args.repeats, seed=args.seed)
+    print("\n  importance by operation family")
+    for item in by_family:
+        print(f"    {item.group:<12} {item.mean:+.5f} ± {item.std:.5f}")
+    print("\n  importance by position (top five)")
+    for item in by_position[:5]:
+        print(f"    {item.group:<12} {item.mean:+.5f} ± {item.std:.5f}")
+
+    patterns = []
+    for family, length in (("Linear", 4), ("Linear", 3), ("Linear", 2), ("Dropout", 2), ("Conv1D", 2)):
+        measured = enrichment(
+            population,
+            f"{length} consecutive {family}",
+            lambda genes, f=family, n=length: consecutive_run(genes, f, n),
+            null=null_probability_of_run(family, length),
+            top_fraction=args.top_fraction,
+        )
+        patterns.append(measured)
+    print(f"\n  pattern enrichment, top {args.top_fraction:.0%} against the sampled population")
+    print(f"    {'pattern':<24} {'in top':>8} {'in pop':>8} {'null':>8} {'enrich':>7}")
+    for item in patterns:
+        print(
+            f"    {item.pattern:<24} {item.top_frequency:>8.3f} {item.population_frequency:>8.3f} "
+            f"{item.null_probability:>8.3f} {item.ratio:>7.2f}"
+        )
+    survivors = [item.pattern for item in patterns if item.ratio >= args.enrichment_floor]
+    print(f"\n  clearing an enrichment of {args.enrichment_floor}: {', '.join(survivors) or 'none'}")
+
+    report = {
+        "source": args.source,
+        "setting": args.setting,
+        "population": len(population),
+        "model": {"trees": args.trees, "seed": args.seed, **fit},
+        "importance_by_family": [item.as_dict() for item in by_family],
+        "importance_by_position": [item.as_dict() for item in by_position],
+        "split_frequency_by_family": split_frequency(model, family_groups()),
+        "split_frequency_by_position": split_frequency(model, position_groups()),
+        "enrichment": [item.as_dict() for item in patterns],
+        "enrichment_floor": args.enrichment_floor,
+        "patterns_clearing_the_floor": survivors,
+        "note": (
+            "enrichment is against the sampled population, which for the legacy source is "
+            "EA-guided and therefore already biased toward whatever the search favoured; "
+            "the null is stated alongside and is the unconstrained-space probability of the "
+            "pattern appearing anywhere in fifteen positions, not in a given window"
+        ),
+    }
+    stem = f"{args.source}_{(args.setting or 'all').replace('/', '_')}"
+    path = write_json(f"structure/{stem}.json", report)
+    print(f"  written: {path}")
+    return 0
+
+
+def _structure_population(args: argparse.Namespace) -> list[tuple[str, float]]:
+    """(encoding, score) pairs from whichever database was asked for."""
+    if args.source == "legacy":
+        from .prior.repository import search_evaluations
+
+        corpus, _, strategy = (args.setting or "/").partition("/")
+        rows = search_evaluations(corpus or None, strategy or None)
+        # The legacy column named `test auc` is balanced accuracy, and it is also what the
+        # search selected on. Both defects are recorded elsewhere; this analysis is
+        # descriptive of that population and says so rather than repairing it silently.
+        return [(row.encoding, row.test_auc) for row in rows]
+
+    from .efficiency import load_points
+
+    return [
+        (point.encoding, float(point.score))
+        for point in load_points(setting=args.setting, metric=args.metric)
+        if point.score is not None and not point.failed
+    ]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="nas4av", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -251,6 +376,44 @@ def build_parser() -> argparse.ArgumentParser:
     platform = sub.add_parser("platform", help="what the stored artifacts were produced on")
     platform.add_argument("--sample", type=int, default=0, help="0 reads every artifact")
     platform.set_defaults(func=cmd_platform)
+
+    structure = sub.add_parser(
+        "structure", help="what the genotype says about performance, by family and position"
+    )
+    structure.add_argument(
+        "--source",
+        choices=("legacy", "campaign"),
+        default="campaign",
+        help="legacy: the 66,000 prior evaluations; campaign: the clean sweep artifacts",
+    )
+    structure.add_argument("--setting", help="corpus/features, default pooled over all")
+    structure.add_argument(
+        "--metric",
+        default="test_roc_auc",
+        help="which campaign score to attribute; ignored for the legacy source",
+    )
+    structure.add_argument("--trees", type=int, default=300)
+    structure.add_argument("--repeats", type=int, default=20)
+    structure.add_argument("--seed", type=int, default=BASE_SEED)
+    structure.add_argument(
+        "--top-fraction",
+        type=float,
+        default=0.05,
+        help="what counts as a top performer when measuring enrichment",
+    )
+    structure.add_argument(
+        "--enrichment-floor",
+        type=float,
+        default=2.7,
+        help="enrichment a pattern must clear to survive as a recommendation (D6)",
+    )
+    structure.add_argument(
+        "--minimum",
+        type=int,
+        default=200,
+        help="refuse to fit below this many evaluations",
+    )
+    structure.set_defaults(func=cmd_structure)
 
     status = sub.add_parser("status", help="what the artifact directory already holds")
     shared(status)
