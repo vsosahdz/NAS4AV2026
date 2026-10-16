@@ -50,7 +50,7 @@ environment_variables:
 command: >-
   export NAS4AV_REFERENCE=${{inputs.cache}} NAS4AV_ARTIFACTS=${{outputs.results}} &&
   uv pip install --quiet --no-deps -e . &&
-  python -m nas4av.cli sweep
+  python -u -m nas4av.cli sweep
   --settings 2013/sem
   --strategies uniform-random
   --runs 1

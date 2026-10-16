@@ -20,13 +20,15 @@ cd "$(dirname "$0")/.."
 REFERENCE="${1:?usage: azure_preemption_test.sh <uninterrupted-artifact.json>}"
 RESOURCE_GROUP="${NAS4AV_RESOURCE_GROUP:-nas4av-rg}"
 WORKSPACE="${NAS4AV_WORKSPACE:-nas4av-ws}"
-# Measured from when the job reports Running, which is earlier than when the command
-# starts: the node still has to pull the image, download the snapshot and install the
-# project. A first attempt killed before it finishes a generation leaves no checkpoint, the
-# retry starts from nothing, and the test reports a restart without saying why. The canary
-# took about 110 s to reach its first evaluation and runs a 24-individual generation in
-# roughly 55 s, so this lands a few generations in.
-KILL_AFTER="${NAS4AV_KILL_AFTER:-300}"
+# How long to keep waiting for a checkpoint to appear before giving up on the attempt.
+#
+# Not how long to wait before killing. Two fixed delays were tried and both killed the job
+# during setup — `Running` is reported well before the command starts, while the node is
+# still pulling the image and installing the project — which left no checkpoint and made
+# the test unable to say whether resume worked or whether there had been nothing to resume
+# from. Guessing the delay is guessing at something observable, so the kill now waits on
+# the checkpoint itself and happens the moment one lands.
+DEADLINE="${NAS4AV_CHECKPOINT_DEADLINE:-900}"
 JOB_FILE="azure/preemption-test.yml"
 STORE="artifacts"
 PREFIX="preemption-test"
@@ -74,35 +76,57 @@ wait_for_end() {
   done
 }
 
-echo "=== attempt 1: will be interrupted ==="
+checkpoints() {
+  command az storage blob list --account-name "${ACCOUNT}" --container-name "${STORE}" \
+    --prefix "${PREFIX}/checkpoints/" --auth-mode login --query "[].name" -o tsv 2>/dev/null || true
+}
+
+echo "=== attempt 1: killed the moment it has something to lose ==="
 FIRST="$(submit)"
 echo "  ${FIRST}"
 wait_for_running "${FIRST}"
-echo "  running; letting it work for ${KILL_AFTER}s before cancelling"
-sleep "${KILL_AFTER}"
-az ml job cancel -n "${FIRST}" >/dev/null
-echo "  cancelled: $(wait_for_end "${FIRST}")"
+echo "  running; waiting for the first checkpoint to reach blob storage"
 
-# Checked here rather than inferred from the outcome. Without this, a first attempt killed
-# before it finished a generation produces exactly the same ending as a resume that failed
-# to read a checkpoint that was there — and those need different fixes.
-echo "  checkpoints left behind:"
-LEFT="$(command az storage blob list --account-name "${ACCOUNT}" --container-name "${STORE}" \
-  --prefix "${PREFIX}/checkpoints/" --auth-mode login --query "[].name" -o tsv 2>/dev/null || true)"
-if [[ -z "${LEFT}" ]]; then
-  cat >&2 <<EOF
+# Waiting on the checkpoint rather than on the clock is what makes this a test of
+# preemption instead of a test of startup latency. It also measures the thing the fan-out
+# actually needs to know — whether a checkpoint is durable *while the job is alive* —
+# separately from whether a retry can read it, and those fail differently.
+DEADLINE_AT=$(( $(date +%s) + DEADLINE ))
+LEFT=""
+while [[ -z "${LEFT}" ]]; do
+  if (( $(date +%s) > DEADLINE_AT )); then
+    az ml job cancel -n "${FIRST}" >/dev/null 2>&1 || true
+    cat >&2 <<EOF
 
-The interrupted attempt wrote no checkpoint, so there is nothing for a retry to resume
-from and the test cannot distinguish a working resume from a broken one.
+No checkpoint reached blob storage within ${DEADLINE}s, while the job was still running.
 
-A checkpoint is written only after a generation completes. Either the kill landed before
-the first one finished -- raise NAS4AV_KILL_AFTER, currently ${KILL_AFTER}s -- or writes
-to the mounted output are not reaching blob storage when the container dies, which is the
-finding this test exists to surface.
+A checkpoint is written after each completed generation, so either the unit is far slower
+here than the canary's 120 evaluations in under seven minutes, or writes to the mounted
+output are buffered and never reach storage until the job ends. The second is the finding
+this test exists to surface, and it would mean spot compute cannot be used as configured:
+a checkpoint that only becomes durable on a clean exit is not a checkpoint.
 EOF
+    exit 1
+  fi
+  STATE="$(status "${FIRST}")"
+  if [[ "${STATE}" != "Running" ]]; then
+    echo "attempt ended as ${STATE} before any checkpoint appeared" >&2
+    exit 1
+  fi
+  LEFT="$(checkpoints)"
+  [[ -z "${LEFT}" ]] && sleep 20
+done
+echo "  checkpoint is durable:"
+echo "${LEFT}" | sed 's/^/    /'
+
+az ml job cancel -n "${FIRST}" >/dev/null
+echo "  cancelled mid-flight: $(wait_for_end "${FIRST}")"
+
+SURVIVED="$(checkpoints)"
+if [[ -z "${SURVIVED}" ]]; then
+  echo "the checkpoint disappeared when the job was cancelled" >&2
   exit 1
 fi
-echo "${LEFT}" | sed 's/^/    /'
 
 echo "=== attempt 2: must resume, not restart ==="
 SECOND="$(submit)"

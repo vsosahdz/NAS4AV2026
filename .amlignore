@@ -1,14 +1,25 @@
-# What does not travel with a job snapshot.
+# What travels with a job snapshot, as an allowlist.
 #
-# The reference clone is 135 MB and is already in the cache datastore; uploading it with
-# every job would pay for it again each time and make the snapshot a second, unversioned
-# copy of the data of record.
-reference/
-artifacts/
-.venv/
-.git/
-__pycache__/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-openspec
+# This was a denylist and it missed `infra/.terraform` — 253 MB of downloaded provider
+# binaries — so every job uploaded a 265 MB snapshot of which about 2 MB was code. Across a
+# fan-out of 55 units that is 14 GB of uploads to ship the same four files, and the state
+# file beside those binaries describes the whole resource graph and has no business on a
+# compute node.
+#
+# A denylist was the wrong shape for the same reason it was in `.dockerignore`: it has to
+# be right about everything that will ever exist in the repository, and it fails silently
+# and expensively when it is wrong. A job needs the package, its metadata and its lock.
+# Everything else — the reference clone, the artifacts, the Terraform state, the design
+# record behind the `openspec` symlink — is either already in the cache datastore or has no
+# reason to leave this machine.
+*
+
+!src/
+!src/**
+!pyproject.toml
+!uv.lock
+!README.md
+
+# Re-excluded under the allowlist: compiled output is regenerated on the node, and shipping
+# bytecode compiled against a different interpreter is a way to get confusing failures.
+src/**/__pycache__/
