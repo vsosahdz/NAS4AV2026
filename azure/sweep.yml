@@ -1,0 +1,74 @@
+# One shard of the campaign, on one spot node.
+#
+# The unit of work is a (setting, strategy) pair: five runs of 1,200 evaluations, written
+# one artifact at a time. A shard is a disjoint set of settings, so two shards can never
+# write the same file and the split needs no coordination beyond being disjoint.
+#
+# Inside the node the pairs run concurrently, one per vCPU. That is what makes the node
+# worth taking: a command job holds a whole node whether it uses sixteen cores or one, so a
+# shard running its pairs in sequence would pay for sixteen and use one. Every evaluation
+# is single-threaded by construction — OMP_NUM_THREADS is pinned to 1 so float64 reduction
+# order does not vary with the thread count — so one pair per core is the natural fit
+# rather than an oversubscription.
+#
+# Submitted by scripts/azure_fanout.sh, which supplies the settings and the revision.
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+experiment_name: nas4av-campaign
+display_name: campaign-shard
+
+code: ..
+environment: azureml:nas4av@latest
+compute: azureml:sweep-spot
+
+inputs:
+  cache:
+    type: uri_folder
+    mode: ro_mount
+    path: azureml://datastores/cache/paths/
+
+# Pinned, and shared by every shard. Two reasons, and the second is the one that matters.
+#
+# A default output path is per-job, so a preempted shard's retry would start from nothing
+# and the per-generation checkpointing would buy nothing at all — which is the whole basis
+# for running this on spot.
+#
+# And because the path is shared, a shard resuming reads the artifacts every other shard
+# has written. It does not need them, since the splits are disjoint, but a unit that
+# already has a readable artifact is skipped rather than recomputed, so a restart after a
+# mass preemption costs only the units that were actually in flight.
+outputs:
+  results:
+    type: uri_folder
+    mode: rw_mount
+    path: azureml://datastores/artifacts/paths/campaign/
+
+# Generous, and bounded. A pair is five units of about 45 minutes each at the canary's
+# measured rate, so a shard is roughly four hours when its pairs run concurrently and the
+# widest settings are slower than that. Eight hours leaves room for a slow node without
+# letting a hung shard bill until somebody notices.
+limits:
+  timeout: 28800
+
+environment_variables:
+  PYTHONWARNINGS: ignore
+  PYTHONHASHSEED: "0"
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  VECLIB_MAXIMUM_THREADS: "1"
+  # Overridden per shard at submission. Defaults left deliberately empty so a shard
+  # submitted without settings fails immediately rather than silently running everything
+  # on every node.
+  NAS4AV_SHARD_SETTINGS: ""
+  NAS4AV_SLOTS: "16"
+
+command: >-
+  export NAS4AV_REFERENCE=${{inputs.cache}} NAS4AV_ARTIFACTS=${{outputs.results}} &&
+  uv pip install --quiet --no-deps -e . &&
+  python -u -c "import sys, torch; print('platform:', sys.version.split()[0], 'torch', torch.__version__)" &&
+  test -n "$NAS4AV_SHARD_SETTINGS" &&
+  for s in $NAS4AV_SHARD_SETTINGS; do
+  for g in evolutionary-variant canonical-ga uniform-random; do
+  echo "$s $g"; done; done |
+  xargs -P "$NAS4AV_SLOTS" -n 2 sh -c
+  'python -u -m nas4av.cli sweep --settings "$1" --strategies "$2" --runs 5 --budget 1200 2>&1 | sed "s|^|[$1 $2] |"' sh &&
+  echo "shard complete"
