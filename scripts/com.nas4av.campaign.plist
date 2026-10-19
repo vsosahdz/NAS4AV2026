@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Start the campaign when the machine comes back, without anybody logging in to do it.
+
+  Install on the reference machine:
+
+      cp scripts/com.nas4av.campaign.plist ~/Library/LaunchAgents/
+      launchctl load ~/Library/LaunchAgents/com.nas4av.campaign.plist
+
+  Remove it when the campaign is finished:
+
+      launchctl unload ~/Library/LaunchAgents/com.nas4av.campaign.plist
+      rm ~/Library/LaunchAgents/com.nas4av.campaign.plist
+
+  A LaunchAgent rather than a LaunchDaemon, deliberately. The campaign runs as the user,
+  writes into the user's home, and needs nothing a daemon's privileges would add; a daemon
+  would also start before the user's filesystem is reliably available.
+
+  RunAtLoad only, with no KeepAlive. campaign-boot.sh starts two detached `screen` sessions
+  and returns immediately, so launchd sees it exit almost at once; KeepAlive would read
+  that as a crash and restart it forever. The supervisor inside each session is what keeps
+  the work alive, and this exists only to fire it once per boot.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nas4av.campaign</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <!-- A login shell, so PATH picks up screen and the project's own tools the same
+             way an interactive session would. launchd's default environment is far
+             narrower than a terminal's, which is a common way for a job that works by hand
+             to fail silently at boot. -->
+        <string>cd "$HOME/PoweredIA-Projects/NAS4AV2026" &amp;&amp; ./scripts/campaign-boot.sh</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/nas4av-campaign-boot.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/nas4av-campaign-boot.log</string>
+
+    <!-- Give the machine a moment to finish bringing up networking and the filesystem
+         before the first artifact listing happens. -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+</dict>
+</plist>
