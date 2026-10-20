@@ -123,7 +123,14 @@ for wave in $(seq 1 "${MAX_WAVES}"); do
     continue
   fi
 
-  mapfile -t SHARDS < <(remaining_shards)
+  # Read line by line rather than with `mapfile`, which macOS does not have: the system
+  # bash is 3.2, and `mapfile` arrived in bash 4. The failure is a bare "command not
+  # found" in the middle of a wave, which leaves the shard list empty and reads like
+  # having nothing left to do.
+  SHARDS=()
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] && SHARDS+=("${line}")
+  done < <(remaining_shards)
   if (( ${#SHARDS[@]} == 0 )); then
     if (( running > 0 )); then
       echo "  ${running} shard(s) hold every outstanding setting; waiting"
