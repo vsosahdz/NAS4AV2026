@@ -20,7 +20,10 @@ cd "$(dirname "$0")/.."
 
 RESOURCE_GROUP="${NAS4AV_RESOURCE_GROUP:-nas4av-rg}"
 WORKSPACE="${NAS4AV_WORKSPACE:-nas4av-ws}"
-MAX_WAVES="${NAS4AV_MAX_WAVES:-20}"
+# Counts *submissions*, not iterations. The limit exists to stop a loop that resubmits
+# failing work forever; waiting for healthy shards is not that, and counting it hit the cap
+# after a hundred minutes of the campaign running perfectly well.
+MAX_WAVES="${NAS4AV_MAX_WAVES:-40}"
 NODES="${NAS4AV_NODES:-4}"
 TOTAL_UNITS=165
 
@@ -108,9 +111,10 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
-for wave in $(seq 1 "${MAX_WAVES}"); do
+wave=0
+while (( wave < MAX_WAVES )); do
   count="$(written | wc -l | tr -d ' ')"
-  echo "=== wave ${wave}, $(date '+%H:%M:%S'), ${count}/${TOTAL_UNITS} units written ==="
+  echo "=== $(date '+%H:%M:%S'), ${count}/${TOTAL_UNITS} units written, ${wave} submission(s) so far ==="
   if (( count >= TOTAL_UNITS )); then
     echo "campaign complete"
     exit 0
@@ -141,6 +145,7 @@ for wave in $(seq 1 "${MAX_WAVES}"); do
     exit 1
   fi
 
+  wave=$((wave + 1))
   for index in "${!SHARDS[@]}"; do
     job="$(az ml job create -f azure/sweep.yml -g "${RESOURCE_GROUP}" -w "${WORKSPACE}" \
       --set "display_name=campaign-shard-w${wave}-${index}" \
@@ -153,5 +158,5 @@ for wave in $(seq 1 "${MAX_WAVES}"); do
   sleep 300
 done
 
-echo "reached ${MAX_WAVES} waves without completing" >&2
+echo "reached ${MAX_WAVES} submission waves without completing" >&2
 exit 1
