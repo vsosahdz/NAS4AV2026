@@ -167,11 +167,28 @@ class Encoder:
             parameter.requires_grad_(False)
         torch.set_grad_enabled(False)
 
-    def chunk_count(self, text: str) -> int:
+    def _chunks(self, text: str) -> Any:
+        """Tokenise one document into overlapping windows.
+
+        Done by the tokenizer's own overflow handling rather than by slicing token ids
+        here. Slicing looks equivalent and is not: the special tokens a model expects at
+        the ends of a sequence have to be added per window, and the API for doing that by
+        hand was removed in transformers 5. Letting the tokenizer window the text keeps the
+        chunks valid inputs rather than almost-valid ones.
+        """
         self.load()
-        ids = self._tokenizer(text, add_special_tokens=False)["input_ids"]
-        step = max(CHUNK_TOKENS - CHUNK_STRIDE, 1)
-        return max(1, -(-max(len(ids) - CHUNK_STRIDE, 1) // step))
+        return self._tokenizer(
+            text or " ",
+            truncation=True,
+            max_length=CHUNK_TOKENS,
+            return_overflowing_tokens=True,
+            stride=CHUNK_STRIDE,
+            padding=True,
+            return_tensors="pt",
+        )
+
+    def chunk_count(self, text: str) -> int:
+        return int(self._chunks(text)["input_ids"].shape[0])
 
     def embed(self, texts: Sequence[str], batch_size: int = 16) -> np.ndarray:
         """Mean-pooled embeddings, one row per document, chunked and averaged.
@@ -187,20 +204,15 @@ class Encoder:
         self.load()
         out = np.zeros((len(texts), int(self._model.config.hidden_size)), dtype=np.float64)
         for index, text in enumerate(texts):
-            ids = self._tokenizer(text, add_special_tokens=False)["input_ids"]
-            step = max(CHUNK_TOKENS - CHUNK_STRIDE, 1)
-            windows = [ids[start : start + CHUNK_TOKENS] for start in range(0, max(len(ids), 1), step)]
-            windows = [w for w in windows if w] or [ids[:CHUNK_TOKENS] or [self._tokenizer.cls_token_id or 0]]
+            encoded = self._chunks(text)
+            ids = encoded["input_ids"]
+            attention = encoded["attention_mask"]
             vectors = []
-            for position in range(0, len(windows), batch_size):
-                batch = windows[position : position + batch_size]
-                encoded = self._tokenizer.pad(
-                    {"input_ids": [self._tokenizer.build_inputs_with_special_tokens(w) for w in batch]},
-                    return_tensors="pt",
-                )
-                encoded = {k: v.to(self.device) for k, v in encoded.items()}
-                hidden = self._model(**encoded).last_hidden_state
-                mask = encoded["attention_mask"].unsqueeze(-1).to(hidden.dtype)
+            for position in range(0, ids.shape[0], batch_size):
+                batch_ids = ids[position : position + batch_size].to(self.device)
+                batch_mask = attention[position : position + batch_size].to(self.device)
+                hidden = self._model(input_ids=batch_ids, attention_mask=batch_mask).last_hidden_state
+                mask = batch_mask.unsqueeze(-1).to(hidden.dtype)
                 pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
                 vectors.append(pooled.double().cpu().numpy())
             out[index] = np.vstack(vectors).mean(axis=0)

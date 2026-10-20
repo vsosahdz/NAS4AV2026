@@ -40,27 +40,49 @@ active_jobs() {
     -o tsv 2>/dev/null || true
 }
 
+# Settings that a live shard is already working on, so a new wave can avoid them instead of
+# waiting for them.
+#
+# Waiting was the first version and it was far too conservative: after three of four shards
+# were evicted, the survivor held the cluster for fifty minutes while three nodes sat idle
+# and the unit count did not move. Spot capacity that is available now may not be available
+# later, so declining to use it is not the safe choice it looks like.
+claimed_settings() {
+  az ml job list -g "${RESOURCE_GROUP}" -w "${WORKSPACE}" \
+    --query "[?contains(display_name,'campaign-shard') && (status=='Running' || status=='Queued' || status=='Starting' || status=='Preparing')].environment_variables.NAS4AV_SHARD_SETTINGS" \
+    -o tsv 2>/dev/null | tr '\t' '\n' | tr ' ' '\n' | sed '/^$/d' | sort -u || true
+}
+
 # Which settings still have unfinished units, packed into `NODES` shards of roughly equal
 # cost. Done in Python because it is the planner that knows what a unit is called, and a
 # shell reimplementation of that naming would drift from it silently.
 remaining_shards() {
   written > /tmp/nas4av-written.txt
-  .venv/bin/python - "${NODES}" <<'PY'
+  claimed_settings > /tmp/nas4av-claimed.txt
+  .venv/bin/python - "${NODES}" "$(active_jobs | wc -l | tr -d ' ')" <<'PY'
 import pathlib, sys
 sys.path.insert(0, "src")
 from nas4av.sweep import SETTINGS, plan
 
-nodes = int(sys.argv[1])
+# Free nodes, not total nodes. A live shard is holding one, and asking the cluster for more
+# than it has simply queues jobs that then sit behind the running one -- which looks like
+# progress in the job list and is not.
+nodes = max(1, int(sys.argv[1]) - int(sys.argv[2]))
 done = {line.strip() for line in pathlib.Path("/tmp/nas4av-written.txt").read_text().splitlines() if line.strip()}
+claimed = {line.strip() for line in pathlib.Path("/tmp/nas4av-claimed.txt").read_text().splitlines() if line.strip()}
 units = plan(settings=list(SETTINGS), strategies=["evolutionary-variant", "canonical-ga", "uniform-random"])
 
 outstanding: dict[str, int] = {}
 for unit in units:
-    if unit.identifier not in done:
-        key = f"{unit.corpus}/{unit.features}"
+    key = f"{unit.corpus}/{unit.features}"
+    # A setting a live shard already holds is skipped rather than waited for. The split is
+    # by setting, so excluding those is enough to guarantee no two jobs touch the same
+    # unit, and the rest of the cluster stays busy.
+    if unit.identifier not in done and key not in claimed:
         outstanding[key] = outstanding.get(key, 0) + 1
 if not outstanding:
     raise SystemExit(0)
+
 
 # Longest-first into the emptiest shard. synBetter carries the widest input and costs
 # about twice what sem does per evaluation, so weight by that rather than by unit count.
@@ -95,14 +117,19 @@ for wave in $(seq 1 "${MAX_WAVES}"); do
   fi
 
   running="$(active_jobs | wc -l | tr -d ' ')"
-  if (( running > 0 )); then
-    echo "  ${running} shard(s) still active; waiting rather than adding duplicates"
+  if (( running >= NODES )); then
+    echo "  ${running} shard(s) active on ${NODES} node(s); nothing to add"
     sleep 300
     continue
   fi
 
   mapfile -t SHARDS < <(remaining_shards)
   if (( ${#SHARDS[@]} == 0 )); then
+    if (( running > 0 )); then
+      echo "  ${running} shard(s) hold every outstanding setting; waiting"
+      sleep 300
+      continue
+    fi
     echo "  nothing outstanding, but only ${count} units written -- stopping so this is visible" >&2
     exit 1
   fi
