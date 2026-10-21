@@ -16,17 +16,16 @@ WORKSPACE="${NAS4AV_WORKSPACE:-nas4av-ws}"
 ACCOUNT="$(az ml datastore show -n artifacts -g "${RESOURCE_GROUP}" -w "${WORKSPACE}" \
   --query account_name -o tsv)"
 
-echo "shards:"
-if [[ -f artifacts/azure-campaign-jobs.txt ]]; then
-  while read -r job; do
-    [[ -n "${job}" ]] || continue
-    read -r status name <<<"$(az ml job show -n "${job}" -g "${RESOURCE_GROUP}" -w "${WORKSPACE}" \
-      --query "[status, display_name]" -o tsv 2>/dev/null || echo "? ?")"
+# Asked of the workspace rather than read from the job list the first fan-out wrote. That
+# file names the original four shards only, so after the supervisor has resubmitted a few
+# waves it reports four long-dead jobs as the state of the campaign -- every one of them
+# Failed, while later shards are running fine.
+echo "recent shards:"
+az ml job list -g "${RESOURCE_GROUP}" -w "${WORKSPACE}" --max-results 40 \
+  --query "reverse(sort_by([?contains(display_name,'campaign-shard')],&creation_context.created_at))[:8].[name,status,display_name]" \
+  -o tsv 2>/dev/null | while IFS=$'\t' read -r job status name; do
     printf '  %-28s %-12s %s\n' "${job}" "${status}" "${name}"
-  done < artifacts/azure-campaign-jobs.txt
-else
-  echo "  (no job list; run azure_fanout.sh first)"
-fi
+  done
 
 units="$(az storage blob list --account-name "${ACCOUNT}" --container-name artifacts \
   --prefix "campaign/sweep/" --auth-mode login \
