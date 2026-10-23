@@ -23,6 +23,7 @@ import sys
 from collections.abc import Sequence
 
 from .artifacts import write_json
+from .comparison import CONTROL as CONTROL_NAME
 from .sweep import (
     BASE_SEED,
     BUDGET,
@@ -206,6 +207,75 @@ def cmd_platform(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_compare(args: argparse.Namespace) -> int:
+    """Did the search buy anything over random at the same budget?"""
+    from .comparison import compare
+
+    report = compare(metric=args.metric, rope=args.rope)
+    if "error" in report:
+        print(f"  {report['error']}")
+        return 1
+
+    print(f"  {report['units']} runs   metric {report['metric']}")
+    budget = report["budget"]
+    if not budget["matched"]:
+        print("  BUDGETS DO NOT MATCH; the comparison is not interpretable:")
+        for strategy, values in budget["evaluations_per_run"].items():
+            print(f"    {strategy:<28} {values}")
+        return 1
+    print(f"  budget matched at {next(iter(budget['evaluations_per_run'].values()))[0]} evaluations")
+
+    comparison = report["comparison"]
+    if "error" in comparison:
+        print(f"  {comparison['error']}")
+        return 1
+
+    for structure in ("per_setting", "per_corpus"):
+        block = comparison[structure]
+        flag = "  UNDERPOWERED" if block.get("underpowered") else ""
+        print(f"\n  {structure.replace('_', ' ')}: {block.get('block_count')} blocks{flag}")
+        ranks = block.get("mean_ranks", {})
+        for name in sorted(ranks, key=lambda k: ranks[k]):
+            print(f"    {name:<30} mean rank {ranks[name]:.2f}")
+        omnibus = block.get("omnibus", {})
+        if omnibus.get("p") is not None:
+            print(f"    friedman p = {omnibus['p']}  (chi2 {omnibus.get('statistic')})")
+        else:
+            print(f"    no omnibus: {omnibus.get('reason')}")
+        for row in block.get("pairwise", []):
+            pair = " vs ".join(row.get("treatments", []))
+            verdict = "differ" if row.get("significant_at_05") else "not separated"
+            print(
+                f"    {pair}: p={row.get('p_raw')} holm={row.get('p_holm')} "
+                f"median diff {row.get('median_difference'):+} -> {verdict}"
+            )
+    print(f"\n  orderings agree across structures: {comparison['orderings_agree']}")
+
+    region = report["rope"]
+    print(f"\n  equivalence region {region['region']}  ({region['origin']})")
+    equivalences = report["equivalence"]
+    # The whole block can be an error rather than a per-strategy one: with no region
+    # derived there is nothing to test against, and that is reported instead of silently
+    # printing nothing.
+    if "error" in equivalences and isinstance(equivalences.get("error"), str):
+        print(f"    {equivalences['error']}")
+        equivalences = {}
+    for strategy, verdict in equivalences.items():
+        if "error" in verdict:
+            print(f"    {strategy}: {verdict['error']}")
+            continue
+        print(
+            f"    {strategy} vs {CONTROL_NAME}: "
+            f"better {verdict.get('probability_first_better')}, "
+            f"equivalent {verdict.get('probability_equivalent')}, "
+            f"worse {verdict.get('probability_second_better')}"
+        )
+
+    path = write_json("comparison/strategies.json", report)
+    print(f"\n  written: {path}")
+    return 0
+
+
 def cmd_structure(args: argparse.Namespace) -> int:
     """What the genotype says about performance, attributed to nameable features.
 
@@ -376,6 +446,22 @@ def build_parser() -> argparse.ArgumentParser:
     platform = sub.add_parser("platform", help="what the stored artifacts were produced on")
     platform.add_argument("--sample", type=int, default=0, help="0 reads every artifact")
     platform.set_defaults(func=cmd_platform)
+
+    comparer = sub.add_parser(
+        "compare", help="do the search strategies differ at a matched budget?"
+    )
+    comparer.add_argument(
+        "--metric",
+        default="test_roc_auc",
+        help="which reported score to compare; selection is always on validation",
+    )
+    comparer.add_argument(
+        "--rope",
+        type=float,
+        default=None,
+        help="equivalence region; derived from document resampling when omitted",
+    )
+    comparer.set_defaults(func=cmd_compare)
 
     structure = sub.add_parser(
         "structure", help="what the genotype says about performance, by family and position"
