@@ -265,10 +265,11 @@ def cmd_compare(args: argparse.Namespace) -> int:
             print(f"    {strategy}: {verdict['error']}")
             continue
         print(
-            f"    {strategy} vs {CONTROL_NAME}: "
-            f"better {verdict.get('probability_first_better')}, "
-            f"equivalent {verdict.get('probability_equivalent')}, "
-            f"worse {verdict.get('probability_second_better')}"
+            f"    {strategy} vs {CONTROL_NAME}: {verdict.get('verdict')}"
+            f"  (better {verdict.get('p_first_better')}, "
+            f"equivalent {verdict.get('p_equivalent')}, "
+            f"worse {verdict.get('p_second_better')}; "
+            f"median diff {verdict.get('median_difference'):+})"
         )
 
     path = write_json("comparison/strategies.json", report)

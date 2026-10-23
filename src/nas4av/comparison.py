@@ -247,14 +247,50 @@ def _region(
     if not root.is_dir():
         return 0.0, "unavailable: no per-architecture scores were stored"
 
+    # The stored scores are logits only. The labels are not stored beside them because they
+    # are a property of the corpus rather than of an evaluation — the same thirty test
+    # pairs for every architecture ever run on 2013 — so duplicating them 1,200 times per
+    # unit would be storing one fact 1,200 times and inviting it to disagree with itself.
+    from .prior.dataset import load_corpus
+
+    labels_for: dict[str, list[int]] = {}
+
+    def test_labels(corpus: str, features: str) -> list[int] | None:
+        if corpus not in labels_for:
+            try:
+                labels_for[corpus] = list(load_corpus(corpus, features).test_labels)
+            except Exception:  # noqa: BLE001 — absent corpora give no region, not a crash
+                labels_for[corpus] = []
+        return labels_for[corpus] or None
+
+    # One interval per setting, not per architecture. The region describes how much the
+    # evaluation set's composition moves a score, which is a property of the corpus; taking
+    # all 1,200 architectures of a unit would weight settings by how many were run on them
+    # and measure the spread between architectures instead.
+    seen: set[str] = set()
     intervals = []
     for path in sorted(root.glob("*.json")):
         payload = json.loads(path.read_text(encoding="utf-8"))
+        # A scores file records its unit as the identifier string rather than as the
+        # structured record the artifact carries, so corpus and features are read off the
+        # name. Underscore-separated and safe to split: the strategies that contain a
+        # separator use a hyphen.
+        identifier = payload.get("unit")
+        parts = identifier.split("_") if isinstance(identifier, str) else []
+        if len(parts) < 2:
+            continue
+        corpus, features = parts[0], parts[1]
+        setting = f"{corpus}/{features}"
+        if setting in seen:
+            continue
+        labels = test_labels(corpus, features)
+        if labels is None:
+            continue
         for record in list(payload.get("scores", {}).values())[:1]:
-            labels = record.get("test_labels") or record.get("labels")
-            scores = record.get("test_logits") or record.get("logits")
-            if not labels or not scores or len(set(labels)) < 2:
+            scores = record.get("test")
+            if not scores or len(scores) != len(labels) or len(set(labels)) < 2:
                 continue
+            seen.add(setting)
             intervals.append(
                 bootstrap_interval(
                     scores,
