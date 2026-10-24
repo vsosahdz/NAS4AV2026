@@ -207,6 +207,47 @@ def cmd_platform(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_exploitability(args: argparse.Namespace) -> int:
+    """Can a search beat sampling on this space? Measured before the search is run."""
+    from .exploitability import report
+    from .measure_space import SPACES, evaluate_sample
+    from .sweep import SETTINGS as ALL_SETTINGS
+
+    chosen = (
+        [tuple(s.split("/", 1)) for s in args.settings]
+        if args.settings
+        else [(c, f) for c, f in ALL_SETTINGS]
+    )
+    if args.space not in SPACES:
+        print(f"  unknown space {args.space!r}; choose from {sorted(SPACES)}")
+        return 1
+
+    results = []
+    for corpus, features in chosen:
+        print(f"  {args.space} {corpus}/{features}: drawing {args.count}...", flush=True)
+        result = evaluate_sample(
+            args.space, corpus, features, count=args.count, seed=args.seed,
+            progress=args.progress,
+        )
+        results.append(result)
+        print(
+            f"    grouped R2 {result.grouped_r2:+.3f}   row-split R2 {result.naive_r2:+.3f}"
+            f"   failed {result.failed}   levels {result.distinct_scores}"
+            f"   -> {'exploitable' if result.exploitable else 'nothing to exploit'}"
+        )
+        for note in result.notes:
+            print(f"    note: {note}")
+
+    summary = report(results)
+    print(f"\n  {summary['settings_exploitable']} of {summary['settings_measured']} settings "
+          f"clear R2 >= {summary['threshold']}")
+    print(f"  median grouped R2: {summary['median_grouped_r2']}")
+    print(f"  DECISION: {summary['decision']}")
+    path = write_json(f"exploitability/{args.space}.json", summary)
+    print(f"  written: {path}")
+    return 0
+
+
 def cmd_compare(args: argparse.Namespace) -> int:
     """Did the search buy anything over random at the same budget?"""
     from .comparison import compare
@@ -447,6 +488,16 @@ def build_parser() -> argparse.ArgumentParser:
     platform = sub.add_parser("platform", help="what the stored artifacts were produced on")
     platform.add_argument("--sample", type=int, default=0, help="0 reads every artifact")
     platform.set_defaults(func=cmd_platform)
+
+    exploit = sub.add_parser(
+        "exploitability", help="can a search beat sampling on this space?"
+    )
+    exploit.add_argument("--space", default="v2", help="which search space to measure")
+    exploit.add_argument("--settings", nargs="*", help="corpus/features, default all")
+    exploit.add_argument("--count", type=int, default=400, help="architectures to draw")
+    exploit.add_argument("--seed", type=int, default=BASE_SEED)
+    exploit.add_argument("--progress", action="store_true", help="print a running estimate")
+    exploit.set_defaults(func=cmd_exploitability)
 
     comparer = sub.add_parser(
         "compare", help="do the search strategies differ at a matched budget?"
