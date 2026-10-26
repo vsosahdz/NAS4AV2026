@@ -275,11 +275,22 @@ def _evaluate(
     for genotype in population:
         with isolated_randomness():
             measurement = evaluator(genotype)
-        architecture = describe(genotype, run.input_shape)
+        # The parameter count comes from the evaluator when it can supply one, because
+        # only the evaluator knows which space the genotype belongs to. Falling back to
+        # the first space's decoder keeps every existing caller unchanged, and a genotype
+        # from another space would otherwise fail to parse here — after it had already
+        # been trained, which is the expensive place to discover it.
+        counter = getattr(evaluator, "params", None)
+        if callable(counter):
+            encoding = ",".join(str(gene) for gene in genotype)
+            parameters = int(counter(genotype))
+        else:
+            architecture = describe(genotype, run.input_shape)
+            encoding, parameters = architecture.encoding, architecture.params
         record = EvaluationRecord(
             generation=generation,
-            genotype=architecture.encoding,
-            params=architecture.params,
+            genotype=encoding,
+            params=parameters,
             validation_roc_auc=measurement.validation_roc_auc,
             validation_balanced_accuracy=measurement.validation_balanced_accuracy,
             test_roc_auc=measurement.test_roc_auc,

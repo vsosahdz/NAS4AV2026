@@ -29,7 +29,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from ..space.genotype import ALPHABET, LENGTH, feasible
+from ..space.spec import SpaceSpec, default as default_space
 
 Genotype = tuple[int, ...]
 
@@ -54,11 +54,20 @@ class SearchStrategy(ABC):
     #: call, which is what makes two strategies comparable at a stated budget.
     population_size: int
 
-    def __init__(self, population_size: int, rng: random.Random) -> None:
+    def __init__(
+        self,
+        population_size: int,
+        rng: random.Random,
+        space: SpaceSpec | None = None,
+    ) -> None:
         if population_size < 2:
             raise ValueError("a population needs at least two individuals to recombine")
         self.population_size = population_size
         self._rng = rng
+        # Defaults to the first space so every existing caller keeps its behaviour. The
+        # operators below read length and alphabet from here rather than from module
+        # constants, which is what lets the same strategy run on either space.
+        self.space = space or default_space()
 
     @property
     @abstractmethod
@@ -72,10 +81,7 @@ class SearchStrategy(ABC):
         whatever it repairs into, and the whole point of the random arm is that its
         distribution is known.
         """
-        while True:
-            candidate = tuple(self._rng.randrange(ALPHABET) for _ in range(LENGTH))
-            if feasible(candidate):
-                return candidate
+        return self.space.random_genotype(self._rng)
 
     def initial_population(self) -> list[Genotype]:
         """Uniform over the feasible space for every strategy.
@@ -135,11 +141,20 @@ class CanonicalGenetic(SearchStrategy):
         population_size: int,
         rng: random.Random,
         crossover_probability: float = 0.9,
-        mutation_probability: float = 1 / LENGTH,
+        mutation_probability: float | None = None,
+        space: SpaceSpec | None = None,
     ) -> None:
-        super().__init__(population_size, rng)
+        super().__init__(population_size, rng, space)
         self.crossover_probability = crossover_probability
-        self.mutation_probability = mutation_probability
+        # One expected mutation per genotype, which depends on the space's length rather
+        # than on a constant: the first space has fifteen positions and the second eight,
+        # so a rate fixed at 1/15 would mutate the shorter space half as often and make a
+        # comparison between them a comparison of mutation rates.
+        self.mutation_probability = (
+            mutation_probability
+            if mutation_probability is not None
+            else 1 / self.space.length
+        )
 
     @property
     def name(self) -> str:
@@ -166,13 +181,15 @@ class CanonicalGenetic(SearchStrategy):
     def _single_point_crossover(self, a: Genotype, b: Genotype) -> tuple[Genotype, Genotype]:
         if self._rng.random() >= self.crossover_probability:
             return a, b
-        cut = self._rng.randrange(1, LENGTH)
+        cut = self._rng.randrange(1, self.space.length)
         return a[:cut] + b[cut:], b[:cut] + a[cut:]
 
     def _mutate(self, genotype: Genotype) -> Genotype:
         return tuple(
-            self._rng.randrange(ALPHABET) if self._rng.random() < self.mutation_probability else g
-            for g in genotype
+            self.space.random_gene(self._rng, position)
+            if self._rng.random() < self.mutation_probability
+            else gene
+            for position, gene in enumerate(genotype)
         )
 
     def next_generation(self, scored: Sequence[Scored]) -> list[Genotype]:
@@ -193,7 +210,7 @@ class CanonicalGenetic(SearchStrategy):
         implementing replacement, and the distinction matters for how the budget is
         spent — a penalised individual costs an evaluation, a replaced one does not.
         """
-        return genotype if feasible(genotype) else self.random_genotype()
+        return genotype if self.space.is_feasible(genotype) else self.random_genotype()
 
 
 class EvolutionaryVariant(SearchStrategy):
@@ -211,15 +228,24 @@ class EvolutionaryVariant(SearchStrategy):
         rng: random.Random,
         crossover_probability: float = 0.9,
         binomial_probability: float = 0.7,
-        mutation_probability: float = 1 / LENGTH,
+        mutation_probability: float | None = None,
         elite_count: int = 1,
+        space: SpaceSpec | None = None,
     ) -> None:
-        super().__init__(population_size, rng)
+        super().__init__(population_size, rng, space)
         if not 0 <= elite_count < population_size:
             raise ValueError("elite_count must leave room for at least one child")
         self.crossover_probability = crossover_probability
         self.binomial_probability = binomial_probability
-        self.mutation_probability = mutation_probability
+        # One expected mutation per genotype, which depends on the space's length rather
+        # than on a constant: the first space has fifteen positions and the second eight,
+        # so a rate fixed at 1/15 would mutate the shorter space half as often and make a
+        # comparison between them a comparison of mutation rates.
+        self.mutation_probability = (
+            mutation_probability
+            if mutation_probability is not None
+            else 1 / self.space.length
+        )
         self.elite_count = elite_count
 
     @property
@@ -240,16 +266,18 @@ class EvolutionaryVariant(SearchStrategy):
         """
         if self._rng.random() >= self.crossover_probability:
             return a
-        forced = self._rng.randrange(LENGTH)
+        forced = self._rng.randrange(self.space.length)
         return tuple(
             b[i] if (i == forced or self._rng.random() < self.binomial_probability) else a[i]
-            for i in range(LENGTH)
+            for i in range(self.space.length)
         )
 
     def _mutate(self, genotype: Genotype) -> Genotype:
         return tuple(
-            self._rng.randrange(ALPHABET) if self._rng.random() < self.mutation_probability else g
-            for g in genotype
+            self.space.random_gene(self._rng, position)
+            if self._rng.random() < self.mutation_probability
+            else gene
+            for position, gene in enumerate(genotype)
         )
 
     def next_generation(self, scored: Sequence[Scored]) -> list[Genotype]:
@@ -258,7 +286,9 @@ class EvolutionaryVariant(SearchStrategy):
         while len(children) < self.population_size:
             child = self._binomial_crossover(self._tournament(scored), self._tournament(scored))
             child = self._mutate(child)
-            children.append(child if feasible(child) else self.random_genotype())
+            children.append(
+                child if self.space.is_feasible(child) else self.random_genotype()
+            )
         return children
 
 

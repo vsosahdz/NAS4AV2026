@@ -84,11 +84,19 @@ class WorkUnit:
     novelty: bool = True
     budget: int = BUDGET
     population_size: int = POPULATION_SIZE
+    #: Which search space this unit searches. Part of the identity rather than a flag,
+    #: because a unit's identity is what it measures: the same corpus, strategy and seed
+    #: over a different space is a different experiment, and letting the two share a
+    #: filename would silently resume one into the other.
+    space: str = "v1"
 
     @property
     def identifier(self) -> str:
         filter_tag = "novelty" if self.novelty else "nofilter"
-        return f"{self.corpus}_{self.features}_{self.strategy}_{filter_tag}_run{self.run}"
+        base = f"{self.corpus}_{self.features}_{self.strategy}_{filter_tag}_run{self.run}"
+        # The first space's units keep their existing names, so the 165 artifacts already
+        # produced stay addressable and nothing has to be re-run to be found.
+        return base if self.space == "v1" else f"{self.space}_{base}"
 
     @property
     def artifact_path(self) -> str:
@@ -110,8 +118,12 @@ class WorkUnit:
 
     def build_strategy(self) -> SearchStrategy:
         """Construct the strategy with its own generator, seeded from the unit."""
+        from .space.spec import get as get_space
+
         strategy = STRATEGIES[self.strategy](
-            population_size=self.population_size, rng=random.Random(self.seed)
+            population_size=self.population_size,
+            rng=random.Random(self.seed),
+            space=get_space(self.space),
         )
         return NoveltyFilter(strategy) if self.novelty else strategy  # type: ignore[return-value]
 
@@ -123,6 +135,7 @@ def plan(
     novelty: bool = True,
     base_seed: int = BASE_SEED,
     budget: int = BUDGET,
+    space: str = "v1",
 ) -> list[WorkUnit]:
     """Enumerate the sweep without running anything.
 
@@ -145,6 +158,7 @@ def plan(
                         seed=seeds[index],
                         novelty=novelty,
                         budget=budget,
+                        space=space,
                     )
                 )
     return units
@@ -176,7 +190,16 @@ def run_unit(unit: WorkUnit, keep_scores: bool = True) -> SearchRun:
     seed_everything(unit.seed)
     corpus = load_corpus(unit.corpus, unit.features)
     split = three_way_split(unit.corpus, corpus.train_labels, corpus.test_labels, seed=unit.seed)
-    evaluator = PipelineEvaluator(corpus, split, keep_scores=keep_scores)
+    # The evaluator is chosen by the unit's space, and nothing else about the driver
+    # changes with it. `run_search` never learns which space it is searching, so the
+    # budget, the checkpointing and the record are identical across both — which is what
+    # makes a comparison between two spaces a comparison of the spaces.
+    if unit.space == "v2":
+        from .evaluator_v2 import V2Evaluator
+
+        evaluator = V2Evaluator(corpus, split, keep_scores=keep_scores, seed=unit.seed)
+    else:
+        evaluator = PipelineEvaluator(corpus, split, keep_scores=keep_scores)
 
     checkpoint = artifacts_root() / unit.checkpoint_path
     started = time.time()
@@ -203,6 +226,7 @@ def run_unit(unit: WorkUnit, keep_scores: bool = True) -> SearchRun:
                 "novelty_filter": unit.novelty,
                 "budget": unit.budget,
                 "population_size": unit.population_size,
+                "space": unit.space,
             },
             "partitions": evaluator.partition_sizes(),
             "supports_clean_selection": split.supports_clean_selection,
