@@ -65,6 +65,7 @@ def _plan_from_args(args: argparse.Namespace) -> list[WorkUnit]:
         novelty=not args.no_novelty,
         base_seed=args.base_seed,
         budget=args.budget,
+        space=getattr(args, "space", "v1"),
     )
 
 
@@ -458,6 +459,11 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument("--runs", type=int, default=RUNS)
         target.add_argument("--budget", type=int, default=BUDGET)
         target.add_argument("--base-seed", type=int, default=BASE_SEED)
+        target.add_argument(
+            "--space",
+            default="v1",
+            help="which search space to search; part of a unit's identity, not a flag",
+        )
         target.add_argument(
             "--no-novelty",
             action="store_true",

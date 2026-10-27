@@ -25,21 +25,31 @@ WORKSPACE="${NAS4AV_WORKSPACE:-nas4av-ws}"
 # after a hundred minutes of the campaign running perfectly well.
 MAX_WAVES="${NAS4AV_MAX_WAVES:-40}"
 NODES="${NAS4AV_NODES:-4}"
-TOTAL_UNITS=165
+TOTAL_UNITS="${NAS4AV_TOTAL_UNITS:-165}"
+
+JOB_FILE="${NAS4AV_JOB_FILE:-azure/sweep.yml}"
+PREFIX="${NAS4AV_PREFIX:-campaign}"
+SPACE="${NAS4AV_SPACE:-v1}"
+# Exported because the planner below runs in a subprocess and reads it from the
+# environment; set without export it would silently plan the first space.
+export NAS4AV_SPACE="${SPACE}"
+# The display name is what the supervisor greps for to find its own shards; two
+# campaigns running at once must not see each other's jobs as their own.
+DISPLAY_PREFIX="${NAS4AV_DISPLAY_PREFIX:-campaign-shard}"
 
 ACCOUNT="$(az ml datastore show -n artifacts -g "${RESOURCE_GROUP}" -w "${WORKSPACE}" \
   --query account_name -o tsv)"
 
 written() {
   az storage blob list --account-name "${ACCOUNT}" --container-name artifacts \
-    --prefix "campaign/sweep/" --auth-mode login \
+    --prefix "${PREFIX}/sweep/" --auth-mode login \
     --query "[?ends_with(name,'.json') && !contains(name,'/scores/')].name" -o tsv 2>/dev/null \
     | sed 's|.*/||; s|\.json$||'
 }
 
 active_jobs() {
   az ml job list -g "${RESOURCE_GROUP}" -w "${WORKSPACE}" \
-    --query "[?contains(display_name,'campaign-shard') && (status=='Running' || status=='Queued' || status=='Starting' || status=='Preparing')].name" \
+    --query "[?contains(display_name,'${DISPLAY_PREFIX}') && (status=='Running' || status=='Queued' || status=='Starting' || status=='Preparing')].name" \
     -o tsv 2>/dev/null || true
 }
 
@@ -52,7 +62,7 @@ active_jobs() {
 # later, so declining to use it is not the safe choice it looks like.
 claimed_settings() {
   az ml job list -g "${RESOURCE_GROUP}" -w "${WORKSPACE}" \
-    --query "[?contains(display_name,'campaign-shard') && (status=='Running' || status=='Queued' || status=='Starting' || status=='Preparing')].environment_variables.NAS4AV_SHARD_SETTINGS" \
+    --query "[?contains(display_name,'${DISPLAY_PREFIX}') && (status=='Running' || status=='Queued' || status=='Starting' || status=='Preparing')].environment_variables.NAS4AV_SHARD_SETTINGS" \
     -o tsv 2>/dev/null | tr '\t' '\n' | tr ' ' '\n' | sed '/^$/d' | sort -u || true
 }
 
@@ -63,7 +73,7 @@ remaining_shards() {
   written > /tmp/nas4av-written.txt
   claimed_settings > /tmp/nas4av-claimed.txt
   .venv/bin/python - "${NODES}" "$(active_jobs | wc -l | tr -d ' ')" <<'PY'
-import pathlib, sys
+import os, pathlib, sys
 sys.path.insert(0, "src")
 from nas4av.sweep import SETTINGS, plan
 
@@ -73,7 +83,11 @@ from nas4av.sweep import SETTINGS, plan
 nodes = max(1, int(sys.argv[1]) - int(sys.argv[2]))
 done = {line.strip() for line in pathlib.Path("/tmp/nas4av-written.txt").read_text().splitlines() if line.strip()}
 claimed = {line.strip() for line in pathlib.Path("/tmp/nas4av-claimed.txt").read_text().splitlines() if line.strip()}
-units = plan(settings=list(SETTINGS), strategies=["evolutionary-variant", "canonical-ga", "uniform-random"])
+units = plan(
+    settings=list(SETTINGS),
+    strategies=["evolutionary-variant", "canonical-ga", "uniform-random"],
+    space=os.environ.get("NAS4AV_SPACE", "v1"),
+)
 
 outstanding: dict[str, int] = {}
 for unit in units:
@@ -147,8 +161,8 @@ while (( wave < MAX_WAVES )); do
 
   wave=$((wave + 1))
   for index in "${!SHARDS[@]}"; do
-    job="$(az ml job create -f azure/sweep.yml -g "${RESOURCE_GROUP}" -w "${WORKSPACE}" \
-      --set "display_name=campaign-shard-w${wave}-${index}" \
+    job="$(az ml job create -f "${JOB_FILE}" -g "${RESOURCE_GROUP}" -w "${WORKSPACE}" \
+      --set "display_name=${DISPLAY_PREFIX}-w${wave}-${index}" \
       --set "environment_variables.NAS4AV_SHARD_SETTINGS=${SHARDS[$index]}" \
       --set "environment_variables.NAS4AV_GIT_REVISION=${REVISION}" \
       --query name -o tsv)"
