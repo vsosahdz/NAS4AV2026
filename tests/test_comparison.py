@@ -209,3 +209,34 @@ class TestComparison:
         table = strategy_table(load_outcomes(write_campaign(tmp_path)))
         sizes = {len(values) for values in table.values()}
         assert sizes == {10}
+
+
+class TestSpacePrefix:
+    def test_a_second_space_identifier_parses_to_its_corpus(self) -> None:
+        """Without this, `v2_2013_sem_...` reads as corpus "v2" and features "2013".
+
+        The symptom is not a crash: no corpus loads, the equivalence region comes back
+        "unavailable", and the report says there were no stored scores — which is a
+        missing-data message for what is actually a parse bug.
+        """
+        from nas4av.comparison import _SPACE_PREFIXES
+
+        assert "v2" in _SPACE_PREFIXES
+        assert "v1" not in _SPACE_PREFIXES, "first-space units carry no prefix"
+
+        def corpus_of(identifier: str) -> tuple[str, str]:
+            parts = identifier.split("_")
+            if parts[0] in _SPACE_PREFIXES:
+                parts = parts[1:]
+            return parts[0], parts[1]
+
+        assert corpus_of("v2_2013_semBert_canonical-ga_novelty_run1") == ("2013", "semBert")
+        assert corpus_of("2013_semBert_canonical-ga_novelty_run1") == ("2013", "semBert")
+
+    def test_the_prefix_list_comes_from_the_registry(self) -> None:
+        """A third space must not need this list updated by hand."""
+        from nas4av.space.spec import _REGISTRY
+
+        from nas4av.comparison import _SPACE_PREFIXES
+
+        assert _SPACE_PREFIXES == frozenset(_REGISTRY) - {"v1"}

@@ -39,6 +39,16 @@ from typing import Any
 from .artifacts import artifacts_root
 from .statistics import both_structures, bootstrap_interval, equivalence, rope_from_intervals
 
+#: Space names that may appear as a leading token in a unit identifier. Read from the
+#: registry rather than hardcoded, so adding a third space cannot leave this behind.
+def _space_prefixes() -> frozenset[str]:
+    from .space.spec import _REGISTRY
+
+    return frozenset(_REGISTRY) - {"v1"}
+
+
+_SPACE_PREFIXES = _space_prefixes()
+
 #: The strategies the campaign ran, with the names the artifacts carry.
 STRATEGIES = ("evolutionary-variant", "canonical-ga", "uniform-random")
 
@@ -275,8 +285,15 @@ def _region(
         # structured record the artifact carries, so corpus and features are read off the
         # name. Underscore-separated and safe to split: the strategies that contain a
         # separator use a hyphen.
+        #
+        # A unit from a space other than the first carries that space as a leading token,
+        # so it is stripped before the corpus is read. Without this, `v2_2013_sem_...`
+        # parses as corpus "v2" and features "2013", no corpus loads, and the region comes
+        # back as "unavailable" — which looks like missing scores rather than a parse bug.
         identifier = payload.get("unit")
         parts = identifier.split("_") if isinstance(identifier, str) else []
+        if parts and parts[0] in _SPACE_PREFIXES:
+            parts = parts[1:]
         if len(parts) < 2:
             continue
         corpus, features = parts[0], parts[1]
