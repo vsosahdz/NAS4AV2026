@@ -101,23 +101,46 @@ class MalformedEncoding(ValueError):
     """Raised when an encoding is not a length-8 sequence over the declared alphabets."""
 
 
-def parse(encoding: str | Sequence[int]) -> tuple[int, ...]:
+@dataclass(frozen=True)
+class Tables:
+    """The alphabets a genotype is decoded against.
+
+    Passed explicitly rather than read from module constants, so an ablation variant
+    decodes against its own alphabet. The alternative — swapping the module's globals
+    around a call — works until two things decode at once, and fails silently when it
+    does: a genotype would build an architecture the variant claims it cannot contain.
+    """
+
+    comparisons: dict[int, str]
+    blocks: dict[int, dict[str, Any]]
+    length: int
+
+
+def tables() -> Tables:
+    """The full second space's alphabets."""
+    return Tables(comparisons=COMPARISONS, blocks=BLOCKS, length=LENGTH)
+
+
+def parse(encoding: str | Sequence[int], using: Tables | None = None) -> tuple[int, ...]:
+    table = using or tables()
     genes = (
         tuple(int(t) for t in encoding.split(","))
         if isinstance(encoding, str)
         else tuple(int(g) for g in encoding)
     )
-    if len(genes) != LENGTH:
-        raise MalformedEncoding(f"expected {LENGTH} genes, got {len(genes)}")
-    if genes[0] not in COMPARISONS:
-        raise MalformedEncoding(f"gene 0 must be a comparison in {sorted(COMPARISONS)}")
+    if len(genes) != table.length:
+        raise MalformedEncoding(f"expected {table.length} genes, got {len(genes)}")
+    if genes[0] not in table.comparisons:
+        raise MalformedEncoding(
+            f"gene 0 must be a comparison in {sorted(table.comparisons)}"
+        )
     for gene in genes[1:]:
-        if gene not in BLOCKS:
-            raise MalformedEncoding(f"block gene {gene} is outside {sorted(BLOCKS)}")
+        if gene not in table.blocks:
+            raise MalformedEncoding(f"block gene {gene} is outside {sorted(table.blocks)}")
     return genes
 
 
-def feasible(encoding: str | Sequence[int]) -> bool:
+def feasible(encoding: str | Sequence[int], using: Tables | None = None) -> bool:
     """Every well-formed encoding is feasible.
 
     Deliberately so. The first space's constraints exist to bound memory on a 4 GB card —
@@ -128,7 +151,7 @@ def feasible(encoding: str | Sequence[int]) -> bool:
     property of the encoding's shape and nothing has to be rejected.
     """
     try:
-        parse(encoding)
+        parse(encoding, using)
     except MalformedEncoding:
         return False
     return True
@@ -176,7 +199,11 @@ class Architecture:
         }
 
 
-def describe(encoding: str | Sequence[int], per_document_width: int) -> Architecture:
+def describe(
+    encoding: str | Sequence[int],
+    per_document_width: int,
+    using: Tables | None = None,
+) -> Architecture:
     """Decode a genotype into its layers and exact parameter count.
 
     ``per_document_width`` is the width of **one** document's feature vector, not the pair.
@@ -184,16 +211,19 @@ def describe(encoding: str | Sequence[int], per_document_width: int) -> Architec
     has already cost a 2x error once; naming the per-document width here makes the mistake
     harder to make.
     """
-    genes = parse(encoding)
-    comparison = COMPARISONS[genes[0]]
+    table = using or tables()
+    genes = parse(encoding, table)
+    comparison = table.comparisons[genes[0]]
     width = per_document_width * COMPARISON_MULTIPLIER[comparison]
     compared_width = width
 
     layers: list[Layer] = []
     params = 0
     for gene in genes[1:]:
-        block = BLOCKS[gene]
+        block = table.blocks[gene]
         kind = block["kind"]
+        if kind == "identity":
+            continue
         if kind == "stop":
             break
         if kind == "dense":

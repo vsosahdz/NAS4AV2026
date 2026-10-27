@@ -21,7 +21,7 @@ import torch
 from torch import nn
 
 from ..prior.dataset import Partition
-from .v2 import COMPARISON_MULTIPLIER, Architecture, describe
+from .v2 import COMPARISON_MULTIPLIER, Architecture, Tables, describe
 
 
 class PairComparison(nn.Module):
@@ -155,8 +155,13 @@ def pair_tensor(part: Partition) -> torch.Tensor:
     return stacked.reshape(stacked.shape[0] // 2, 2, stacked.shape[-1])
 
 
-def build(encoding: str | Sequence[int], per_document_width: int) -> V2Model:
-    model = V2Model(describe(encoding, per_document_width))
+def build(
+    encoding: str | Sequence[int],
+    per_document_width: int,
+    using: Tables | None = None,
+) -> V2Model:
+    """Build under the given alphabets, so an ablation variant builds what it encodes."""
+    model = V2Model(describe(encoding, per_document_width, using))
     return model.double()
 
 
@@ -169,6 +174,7 @@ def train_and_score(
     batch_size: int,
     learning_rate: float,
     seed: int,
+    using: Tables | None = None,
 ) -> dict[str, Any]:
     """Train one architecture and return its logits on each named partition.
 
@@ -177,7 +183,7 @@ def train_and_score(
     project has already been bitten by once.
     """
     torch.manual_seed(seed)
-    model = build(encoding, per_document_width)
+    model = build(encoding, per_document_width, using)
 
     inputs = pair_tensor(train)
     labels = torch.tensor(train.labels, dtype=torch.float64)

@@ -31,11 +31,29 @@ from .exploitability import (
 from .prior.dataset import load_corpus, partition
 from .protocol import three_way_split
 
-#: Which sampler and featuriser belong to each space.
+#: Which sampler and featuriser belong to each space. The first two are named explicitly
+#: because the first space's sampler has to reject against `g1` and `g2`; everything else
+#: is resolved through the registry, so an ablation variant is measured by exactly the code
+#: that measures the full space rather than by a parallel path.
 SPACES = {
     "v1": (sample_v1, featurise_v1),
     "v2": (sample_v2, featurise_v2),
 }
+
+
+def _resolve(space: str):
+    if space in SPACES:
+        return SPACES[space]
+    from .exploitability import featurise_spec, sample_spec
+    from .space.ablation import VARIANTS, register
+
+    if space in VARIANTS:
+        register()
+    from .space.spec import _REGISTRY
+
+    if space not in _REGISTRY:
+        raise KeyError(f"unknown space {space!r}")
+    return (lambda count, seed: sample_spec(space, count, seed)), featurise_spec(space)
 
 
 def _roc_auc(logits: Sequence[float], labels: Sequence[int]) -> float | None:
@@ -56,7 +74,7 @@ def evaluate_sample(
     progress: bool = False,
 ) -> Exploitability:
     """Draw, train and fit — the whole measurement for one space on one setting."""
-    sampler, featuriser = SPACES[space]
+    sampler, featuriser = _resolve(space)
     encodings = sampler(count, seed)
 
     corpus = load_corpus(corpus_name, features)
@@ -116,14 +134,18 @@ def _evaluate_one(
     and report that as exploitable structure about quality.
     """
     try:
-        if space == "v2":
+        if space != "v1":
+            from .space.ablation import VARIANTS, tables_for
             from .space.v2_model import train_and_score
 
+            # An ablation variant builds against its own alphabet, passed explicitly. The
+            # full space passes None and gets its own.
+            using = tables_for(space) if space in VARIANTS else None
             per_document = corpus.input_shape // 2
             result = train_and_score(
                 encoding, per_document, train, evaluate_on,
                 epochs=epochs, batch_size=BATCH_SIZE,
-                learning_rate=LEARNING_RATE, seed=seed,
+                learning_rate=LEARNING_RATE, seed=seed, using=using,
             )
             return _roc_auc(result["test"], evaluate_on["test"].labels)
 
