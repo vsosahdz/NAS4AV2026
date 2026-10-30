@@ -44,6 +44,15 @@ CELLS: tuple[tuple[int, str, str | None], ...] = (
     # than stored. Its fixed width of 32 is what makes the syntactic input shape
     # (tensor + 32) * 2; the module-level call that follows the definition is cut.
     (19, "get_punctuation_bow", "puncs_train, puncs_test = get_punctuation_bow"),
+    # Feature generation, extracted so that a corpus the prior work never processed gets
+    # exactly the features the stored tensors were built with. Reimplementing these would
+    # make a new corpus incomparable with the existing five in a way nothing would catch:
+    # the numbers would still be features, still the right width, and still wrong.
+    #
+    # All three are pure definitions with no module-level calls to cut.
+    (15, "get_pos_df", None),
+    (16, "get_tfidf_df", None),
+    (23, "get_wembs_df", None),
     (26, "RDropout", None),
     (28, "Model", None),
     (30, "Search_Space", None),
@@ -62,9 +71,14 @@ CELLS: tuple[tuple[int, str, str | None], ...] = (
 #: instead of silently producing code that runs on the wrong one.
 DEVICE_SUBSTITUTIONS: tuple[tuple[str, str, int], ...] = (
     ("""torch.device("cuda" if torch.cuda.is_available() else "cpu")""", "DEVICE", 1),
-    ("""device='cuda'""", "device=DEVICE", 1),
+    # Four, not one: three of them arrive with get_wembs_df, which builds its embedding
+    # tensors on the device directly. The count is stated rather than loosened so that a
+    # future cell bringing a fifth is caught the way this one was.
+    ("""device='cuda'""", "device=DEVICE", 4),
     (""".to(torch.device('cuda'))""", ".to(DEVICE)", 6),
-    (""".to('cuda')""", ".to(DEVICE)", 5),
+    # Seven, not five: two arrive with get_tfidf_df, which moves its matrices to the
+    # device as it builds them.
+    (""".to('cuda')""", ".to(DEVICE)", 7),
 )
 
 HEADER = '''"""Extracted from the prior implementation's notebook. Do not edit by hand.
@@ -109,6 +123,18 @@ from sklearn.metrics import (
     precision_recall_fscore_support,
 )
 from sklearn.model_selection import KFold
+
+# Imported here rather than extracted, because the notebook's import cell also pulls in
+# Colab-only machinery that cannot run outside it. Only what the extracted functions
+# actually reference is brought across.
+#
+# nltk's taggers and tokenisers are data, not code: they download on first use and the
+# POS tags -- and therefore every syntactic feature -- depend on which version is
+# present. `nltk_resources()` names them so a fresh machine fails loudly on a missing
+# one rather than quietly producing different features.
+import nltk
+from nltk import pos_tag, sent_tokenize, word_tokenize
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 
 class _NotExtracted:

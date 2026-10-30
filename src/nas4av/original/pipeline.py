@@ -41,6 +41,18 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import KFold
 
+# Imported here rather than extracted, because the notebook's import cell also pulls in
+# Colab-only machinery that cannot run outside it. Only what the extracted functions
+# actually reference is brought across.
+#
+# nltk's taggers and tokenisers are data, not code: they download on first use and the
+# POS tags -- and therefore every syntactic feature -- depend on which version is
+# present. `nltk_resources()` names them so a fresh machine fails loudly on a missing
+# one rather than quietly producing different features.
+import nltk
+from nltk import pos_tag, sent_tokenize, word_tokenize
+from sklearn.feature_extraction.text import TfidfVectorizer
+
 
 class _NotExtracted:
     """Stands in for classes the manifest deliberately leaves behind.
@@ -183,6 +195,144 @@ def get_punctuation_bow(df_training, df_test):
     puncs_test = nn.functional.normalize(torch.DoubleTensor(test_counts).to(DEVICE), dim=1)
 
     return puncs_train, puncs_test
+
+
+# ── get_pos_df ────────────────────────────────────────────────────────
+# code cell 15
+
+def get_pos_df(df):
+    """Replace words with POS tags in new DataFrame.
+    
+    Input:
+    df: DataFrame -> Contains the documents and the labels.
+
+    Returns:
+    pdf: DataFrame -> Has replaced the words for POS tags.
+    """
+    
+    # Prepare an empty list to store the results
+    result_rows = []
+    
+    for i, sentence in enumerate(df['text']):
+        debug(i, f'{i} index')
+        s_tokenized = sent_tokenize(sentence)
+        
+        # Collect all tags in one list for this sentence
+        tagss = []
+        for ste in s_tokenized:
+            words = [w.lower() for w in word_tokenize(ste)]
+            w_tags = nltk.pos_tag(words)
+            tags = " ".join([tag for _, tag in w_tags])
+            tagss.append(tags)
+        
+        # Join all sentence tags and append to results
+        result_rows.append(" ".join(tagss))
+    
+    # Convert the list of POS tags into a DataFrame
+    pdf = pd.DataFrame(result_rows, columns=['text'])
+    
+    # Copy the 'label' column and set the correct index
+    pdf['label'] = df['label'].values
+    pdf.index = df.index
+    
+    return pdf
+# training_pdf = get_pos_df(train_dfuch)
+# test_pdf = get_pos_df(test_dfuch)
+# debug(training_pdf, 'training pos df')
+# debug(test_pdf, 'test pos df')
+
+
+# ── get_tfidf_df ──────────────────────────────────────────────────────
+# code cell 16
+
+def get_tfidf_df(dfs):
+    """Create tensors of Tf-IDFs using dfs[0] to learn vocabulary.
+    
+    Input:
+    dfs: tuple[DataFrame] -> The first DataFrame is for training, the second
+                             is for testing.
+
+    Returns:
+    tfidf_training_tensor: Tensor -> The trained TF-IDF values for the training set. 
+    tfidf_test_tensor: Tensor -> The TF-IDF values for the test set.
+    tfidf: TfidfVectorizer -> The TF-IDF vectorizer instance.
+    """ 
+
+    df_training, df_test = dfs
+    tfidf = TfidfVectorizer(ngram_range=(2, 2))
+
+    # Get tf-idf values. Learn vocabulary from training set.
+    tfidf_training = tfidf.fit_transform(list(df_training['text'])).toarray()
+    # Use known vocabulary to calculate test set.
+    tfidf_test = tfidf.transform(list(df_test['text'])).toarray()
+
+    # Convert training TF-IDF to float64 and move to GPU
+    tfidf_training_tensor = torch.from_numpy(tfidf_training).double().to(DEVICE)
+
+    # Convert test TF-IDF to float64 and move to GPU
+    tfidf_test_tensor = torch.from_numpy(tfidf_test).double().to(DEVICE)
+
+    return tfidf_training_tensor, tfidf_test_tensor, tfidf
+
+
+# train_tfidfs, test_tfidfs, tfidfV = get_tfidf_df((training_pdf, test_pdf))
+
+
+# ── get_wembs_df ──────────────────────────────────────────────────────
+# code cell 23
+
+def get_wembs_df(df, embedding_dict, wemb_size=300):
+    """ Use an embedding dictionary to calculate the embeddings of texts in df.
+    
+    Input:
+    df: DataFrame -> Contains the documents and the labels.
+    embedding_dict: gensim.models.keyedvectors.KeyedVectors -> word embedding
+                                                               dictionary.
+
+    Returns:
+    wembs: Tensor -> Contains the normalized sum of word embeddings for all 
+                     documents.
+    """
+    
+    n_docs = len(df)
+    # Pre-allocate the embeddings tensor
+    wembs = torch.zeros((n_docs, wemb_size), dtype=torch.float64, device=DEVICE)
+
+    for ind, text in enumerate(df['text'].values):
+        debug(ind, f'doc index out of {n_docs}')
+        doc_embeddings = []
+        # Iterate through each sentence in the document.
+        for sentence in sent_tokenize(text):
+            sentence_embeddings = []
+            # Tokenize the sentence into words.
+            for word in word_tokenize(sentence):
+                try:
+                    # Get embedding of lowercase version of the word.
+                    word_embeddings = embedding_dict[word.lower()]
+                    sentence_embeddings.append(word_embeddings)
+                except KeyError:
+                    # If glove does not know the word, ignore it.
+                    continue
+
+            if sentence_embeddings:
+                sentence_tensor = torch.tensor(np.array(sentence_embeddings), dtype=torch.float64, device=DEVICE)
+                # Combine all word embeddings of a sentence by sum.
+                doc_embeddings.append(torch.sum(sentence_tensor, dim=0))
+
+        if doc_embeddings:
+            doc_tensor = torch.stack(doc_embeddings)
+            # Combine all sentence embeddings of a document by sum.
+            wembs[ind] = torch.sum(doc_tensor, dim=0)
+        else:
+            wembs[ind] = torch.zeros(wemb_size, dtype=torch.float64, device=DEVICE)
+
+    # Normalize the embeddings
+    wembs = torch.nn.functional.normalize(wembs, dim=1)
+
+    return wembs
+
+# training_wembs = get_wembs_df(train_dfuch, embedding_dict)
+# test_wembs = get_wembs_df(test_dfuch, embedding_dict)
 
 
 # ── RDropout ──────────────────────────────────────────────────────────
