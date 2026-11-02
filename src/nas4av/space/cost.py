@@ -64,10 +64,50 @@ def input_shape(corpus: str, strategy: str) -> int:
     2013, and 453 + 32 = 485. That equality is the only independent confirmation
     available for the punctuation width, so it is also asserted in the tests.
     """
-    width = TENSOR_WIDTH[(corpus, strategy)]
+    width = _measured_width(corpus, strategy)
     if strategy in CONCATENATES_PUNCTUATION:
         width += PUNCTUATION_WIDTH
     return width * PAIR_FACTOR
+
+
+#: Widths measured from tensors on disk, cached per process. Only consulted when the
+#: feature directory has been redirected.
+_MEASURED: dict[tuple[str, str], int] = {}
+
+
+def _measured_width(corpus: str, strategy: str) -> int:
+    """The tensor's actual width, from disk when the features have been rebuilt.
+
+    The table above describes the *stored* tensors, and a rebuild does not reproduce their
+    vocabulary size: the POS tagger's output shifts between NLTK versions, so CLEF-PAN
+    2013 rebuilds to 452 columns against a stored 453, and 2014 Essay to 793 against 801.
+
+    Trusting the table against rebuilt features would construct every model one column too
+    wide. That fails loudly on the first matrix multiply, which is the good case; the bad
+    case is a corpus where the rebuilt width happens to match and the columns do not, and
+    nothing complains at all. Measuring removes the question.
+    """
+    import os
+
+    if not os.environ.get("NAS4AV_FEATURES"):
+        return TENSOR_WIDTH[(corpus, strategy)]
+
+    key = (corpus, strategy)
+    if key not in _MEASURED:
+        import torch
+
+        from ..prior.dataset import FEATURE_FILES, _embeddings_dir
+
+        stem = FEATURE_FILES[strategy][0].format(corpus)
+        path = _embeddings_dir() / f"{stem}.pt"
+        if not path.exists():
+            raise KeyError(
+                f"features were redirected to {_embeddings_dir()} but {path.name} is "
+                "absent; rebuild every corpus or redirect back, never half of each"
+            )
+        tensor = torch.load(path, map_location="cpu", weights_only=False)
+        _MEASURED[key] = int(tensor.shape[-1])
+    return _MEASURED[key]
 
 
 @dataclass(frozen=True)

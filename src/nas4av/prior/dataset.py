@@ -15,6 +15,8 @@ that loads, trains, and means nothing.
 
 from __future__ import annotations
 
+import os
+
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -104,6 +106,17 @@ class Corpus:
 
 
 def _embeddings_dir() -> Path:
+    """Where the feature tensors are read from.
+
+    NAS4AV_FEATURES redirects this to a rebuilt set. It is an override rather than a
+    merge, deliberately: a rebuilt tensor and a stored one have the same shape and dtype
+    and different column orders, so a directory holding some of each would train models on
+    mismatched features and report nothing wrong. Either all of them are rebuilt or none
+    are.
+    """
+    override = os.environ.get("NAS4AV_FEATURES")
+    if override:
+        return Path(override).resolve()
     return reference_root() / "PreprocessedEmbeddings" / "float64"
 
 
