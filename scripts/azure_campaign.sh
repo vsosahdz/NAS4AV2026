@@ -33,6 +33,11 @@ SPACE="${NAS4AV_SPACE:-v1}"
 # Exported because the planner below runs in a subprocess and reads it from the
 # environment; set without export it would silently plan the first space.
 export NAS4AV_SPACE="${SPACE}"
+# Which settings this campaign covers. Empty means all eleven, which is what a fresh
+# campaign wants; a re-run after rebuilding features wants only the settings whose
+# features actually changed, and without this it plans all 165 units and pays for 105
+# that would reproduce numbers already in hand.
+export NAS4AV_ONLY_SETTINGS="${NAS4AV_ONLY_SETTINGS:-}"
 # The display name is what the supervisor greps for to find its own shards; two
 # campaigns running at once must not see each other's jobs as their own.
 DISPLAY_PREFIX="${NAS4AV_DISPLAY_PREFIX:-campaign-shard}"
@@ -83,8 +88,10 @@ from nas4av.sweep import SETTINGS, plan
 nodes = max(1, int(sys.argv[1]) - int(sys.argv[2]))
 done = {line.strip() for line in pathlib.Path("/tmp/nas4av-written.txt").read_text().splitlines() if line.strip()}
 claimed = {line.strip() for line in pathlib.Path("/tmp/nas4av-claimed.txt").read_text().splitlines() if line.strip()}
+only = [s for s in os.environ.get("NAS4AV_ONLY_SETTINGS", "").split() if s]
+chosen = [tuple(s.split("/", 1)) for s in only] if only else list(SETTINGS)
 units = plan(
-    settings=list(SETTINGS),
+    settings=chosen,
     strategies=["evolutionary-variant", "canonical-ga", "uniform-random"],
     space=os.environ.get("NAS4AV_SPACE", "v1"),
 )
