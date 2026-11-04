@@ -45,11 +45,20 @@ DISPLAY_PREFIX="${NAS4AV_DISPLAY_PREFIX:-campaign-shard}"
 ACCOUNT="$(az ml datastore show -n artifacts -g "${RESOURCE_GROUP}" -w "${WORKSPACE}" \
   --query account_name -o tsv)"
 
+# Every Azure query is a network call, and a transient local failure -- a dropped DNS
+# lookup was enough -- must not end a campaign that is running fine. `set -e` turns any
+# non-zero exit into one, so the calls that only *observe* state are wrapped to fail soft
+# and the caller decides what an empty answer means.
+#
+# An empty listing is deliberately ambiguous here: it reads the same as "nothing written
+# yet". That is safe because the supervisor only ever acts on work it can confirm is
+# missing, and planning against a short listing re-submits units that already exist --
+# which the resume logic then skips.
 written() {
   az storage blob list --account-name "${ACCOUNT}" --container-name artifacts \
     --prefix "${PREFIX}/sweep/" --auth-mode login \
     --query "[?ends_with(name,'.json') && !contains(name,'/scores/')].name" -o tsv 2>/dev/null \
-    | sed 's|.*/||; s|\.json$||'
+    | sed 's|.*/||; s|\.json$||' || true
 }
 
 active_jobs() {
@@ -141,7 +150,7 @@ while (( wave < MAX_WAVES )); do
     exit 0
   fi
 
-  running="$(active_jobs | wc -l | tr -d ' ')"
+  running="$(active_jobs | wc -l | tr -d ' ' || echo 0)"
   if (( running >= NODES )); then
     echo "  ${running} shard(s) active on ${NODES} node(s); nothing to add"
     sleep 300
