@@ -83,6 +83,26 @@ claimed_settings() {
 # Which settings still have unfinished units, packed into `NODES` shards of roughly equal
 # cost. Done in Python because it is the planner that knows what a unit is called, and a
 # shell reimplementation of that naming would drift from it silently.
+# How many of this campaign's planned units already have an artifact.
+planned_complete() {
+  written > /tmp/nas4av-written.txt
+  .venv/bin/python - <<'PYCOUNT' 2>/dev/null || echo 0
+import os, pathlib, sys
+sys.path.insert(0, "src")
+from nas4av.sweep import SETTINGS, plan
+
+done = {l.strip() for l in pathlib.Path("/tmp/nas4av-written.txt").read_text().splitlines() if l.strip()}
+only = [s for s in os.environ.get("NAS4AV_ONLY_SETTINGS", "").split() if s]
+chosen = [tuple(s.split("/", 1)) for s in only] if only else list(SETTINGS)
+units = plan(
+    settings=chosen,
+    strategies=["evolutionary-variant", "canonical-ga", "uniform-random"],
+    space=os.environ.get("NAS4AV_SPACE", "v1"),
+)
+print(sum(1 for unit in units if unit.identifier in done))
+PYCOUNT
+}
+
 remaining_shards() {
   written > /tmp/nas4av-written.txt
   claimed_settings > /tmp/nas4av-claimed.txt
@@ -143,7 +163,11 @@ fi
 
 wave=0
 while (( wave < MAX_WAVES )); do
-  count="$(written | wc -l | tr -d ' ')"
+  # Counted against the *plan*, not against the blob prefix. A prefix can hold artifacts
+  # from settings this campaign does not cover -- an earlier mis-filtered shard left 31 of
+  # them here -- and counting those made the supervisor read 56 of 45 and exit with 35
+  # units still missing.
+  count="$(planned_complete)"
   echo "=== $(date '+%H:%M:%S'), ${count}/${TOTAL_UNITS} units written, ${wave} submission(s) so far ==="
   if (( count >= TOTAL_UNITS )); then
     echo "campaign complete"
