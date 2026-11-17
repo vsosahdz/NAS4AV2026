@@ -137,8 +137,14 @@ def compare_rebuild(
         else None,
         "max_shift": round(max((s.largest_shift for s in shifts), default=0.0), 4),
         "conclusion": (
-            "the rebuild changes scores and not conclusions"
-            if shifts and len(held) == len(shifts)
+            # Three outcomes, not two. With nothing compared the honest answer is that
+            # nothing is known -- the first run of this reported "changes at least one
+            # conclusion" from zero settings, because a missing directory and a real
+            # reversal took the same branch.
+            "nothing was compared: one side is missing the affected settings"
+            if not shifts
+            else "the rebuild changes scores and not conclusions"
+            if len(held) == len(shifts)
             else "the rebuild changes at least one conclusion; it cannot be treated as cosmetic"
         ),
         "what_is_compared": (

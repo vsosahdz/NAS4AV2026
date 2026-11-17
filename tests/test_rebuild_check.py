@@ -123,3 +123,24 @@ class TestCompare:
         before = write_units(tmp_path / "before", self.scores(0.50))
         after = write_units(tmp_path / "after", self.scores(0.52))
         assert "necessarily differ" in compare_rebuild(before, after)["what_is_compared"]
+
+
+class TestEmptyComparison:
+    def test_nothing_compared_is_not_reported_as_a_changed_conclusion(
+        self, tmp_path: Path
+    ) -> None:
+        """A missing directory and a real reversal must not share a verdict.
+
+        The first run of this reported "changes at least one conclusion" from zero
+        settings, because one side's artifacts had been cleaned off /tmp. Read quickly,
+        that says the rebuild broke something.
+        """
+        empty_before = write_units(tmp_path / "before", {})
+        after = write_units(
+            tmp_path / "after",
+            {s: {"evolutionary-variant": 0.7, CONTROL: 0.5} for s in REBUILT_SETTINGS},
+        )
+        report = compare_rebuild(empty_before, after)
+        assert report["settings_compared"] == 0
+        assert "nothing was compared" in report["conclusion"]
+        assert "changes at least one conclusion" not in report["conclusion"]
